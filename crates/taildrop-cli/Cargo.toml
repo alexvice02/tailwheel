@@ -1,0 +1,16 @@
+[package]
+name = "taildrop-cli"
+version.workspace = true
+edition.workspace = true
+description = "CLI tools for taildrop-gui: send files, confirm/reject incoming drops, view device stats"
+
+[[bin]]
+name = "taildrop"
+path = "src/main.rs"
+
+[dependencies]
+taildrop-core = { path = "../taildrop-core" }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }

@@ -1,0 +1,13 @@
+[package]
+name = "taildrop-core"
+version.workspace = true
+edition.workspace = true
+description = "Shared Taildrop integration, history and settings store for taildrop-gui and taildrop-cli"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+dirs.workspace = true
+uuid.workspace = true
+chrono.workspace = true
