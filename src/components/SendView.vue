@@ -111,6 +111,7 @@ import {
 } from "@lucide/vue";
 import {api} from "../lib/api";
 import {formatSize} from "../lib/format";
+import {pendingSendTarget} from "../lib/sendTarget";
 
 const targets = ref([]);
 const selectedTarget = ref("");
@@ -139,6 +140,10 @@ async function loadTargets() {
     loadError.value = "";
     try {
         targets.value = await api.getCpTargets();
+        if (pendingSendTarget.value && targets.value.some((t) => t.name === pendingSendTarget.value)) {
+            selectedTarget.value = pendingSendTarget.value;
+        }
+        pendingSendTarget.value = null;
         if (targets.value.length && !targets.value.some((t) => t.name === selectedTarget.value)) {
             const firstOnline = targets.value.find((t) => !t.offline) ?? targets.value[0];
             selectedTarget.value = firstOnline.name;

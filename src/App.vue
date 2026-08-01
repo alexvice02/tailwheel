@@ -20,7 +20,7 @@
                             :class="{ 'nav-item': true, 'nav-item--expanded': isExpanded(parent.id) || !parent?.items?.length }"
                             @click.prevent="parent?.items?.length ? toggleExpanded(parent.id) : current = parent?.path"
                         >
-                            <component :is="FolderCode" :size="17" class="nav-item__icon"></component>
+                            <component :is="parent?.icon" :size="17" class="nav-item__icon" v-if="parent?.icon"></component>
                             {{ parent?.label }}
                             <component :is="ChevronDown" :size="17" class="nav-item__toggle" v-if="parent?.items?.length"></component>
                         </button>
@@ -74,8 +74,10 @@ import {
     PanelLeft,
     ChevronDown,
     FolderCode,
+    Network,
     Dot
 } from "@lucide/vue";
+import TailnetView from "./components/TailnetView.vue";
 import SendView from "./components/SendView.vue";
 import InboxView from "./components/InboxView.vue";
 import HistoryView from "./components/HistoryView.vue";
@@ -84,6 +86,7 @@ import SettingsView from "./components/SettingsView.vue";
 import {api} from "./lib/api";
 
 const navItems = [
+    {id: 7, path: "/tailnet", label: "Tailnet", component: TailnetView, icon: Network},
     {id: 1, label: "Taildrop", icon: FolderCode, items: [
             {id: 2, path: "/send", label: "Send", component: SendView, icon: SendIcon},
             {id: 3, path: "/inbox", label: "Inbox", component: InboxView, icon: InboxIcon},
@@ -95,7 +98,7 @@ const navItems = [
 const expandedIds = ref(new Set([1]));
 const aliases = {"/": "/send"};
 
-const current = ref("/send");
+const current = ref("/tailnet");
 const pendingCount = ref(0);
 const unlisteners = [];
 

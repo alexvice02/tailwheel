@@ -4,7 +4,7 @@ pub mod models;
 pub mod store;
 pub mod tailscale;
 
-use error::Result;
+use error::{Result, TaildropError};
 use models::{
     ConflictPolicy, DeviceStats, PendingIncoming, Settings, TransferDirection, TransferRecord,
     TransferStatus,
@@ -48,8 +48,14 @@ pub fn send_with_attribution(
         let text = serde_json::to_string(&sidecar)?;
         std::fs::write(&sidecar_path, text).map_err(|e| error::TaildropError::Io(e.to_string()))?;
         // Best-effort: a receiver not running our tooling just gets an extra
-        // small file in their inbox, which is harmless.
-        let _ = tailscale::send_file(target, &sidecar_path, Some(&sidecar_name));
+        // small file in their inbox, which is harmless — except a timeout,
+        // which means the target is unreachable and the real payload below
+        // would just time out too. Bail out now instead of making the
+        // caller wait through two timeouts back to back for one failure.
+        match tailscale::send_file(target, &sidecar_path, Some(&sidecar_name)) {
+            Err(TaildropError::Timeout(msg)) => return Err(TaildropError::Timeout(msg)),
+            _ => {}
+        }
         tailscale::send_file(target, file, None)
     })();
 

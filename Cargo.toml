@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [workspace.dependencies]
@@ -17,3 +17,4 @@ thiserror = "1"
 dirs = "5"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+wait-timeout = "0.2"
