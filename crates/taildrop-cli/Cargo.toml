@@ -2,7 +2,7 @@
 name = "taildrop-cli"
 version.workspace = true
 edition.workspace = true
-description = "CLI tools for taildrop-gui: send files, confirm/reject incoming drops, view device stats"
+description = "CLI tools for tailwheel: send files, confirm/reject incoming drops, view device stats"
 
 [[bin]]
 name = "taildrop"
@@ -13,4 +13,5 @@ taildrop-core = { path = "../taildrop-core" }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+uuid.workspace = true
 clap = { version = "4", features = ["derive"] }

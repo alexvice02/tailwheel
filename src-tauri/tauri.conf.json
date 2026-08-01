@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "taildrop-gui",
+  "productName": "tailwheel",
   "version": "0.1.0",
-  "identifier": "com.alexvice02.taildrop-gui",
+  "identifier": "com.alexvice02.tailwheel",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,8 +12,8 @@
   "app": {
     "windows": [
       {
-        "title": "taildrop-gui",
-        "width": 800,
+        "title": "tailwheel",
+        "width": 950,
         "height": 600
       }
     ],

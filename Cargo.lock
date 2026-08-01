@@ -3452,6 +3452,7 @@ dependencies = [
  "serde",
  "serde_json",
  "taildrop-core",
+ "uuid",
 ]
 
 [[package]]
@@ -3467,9 +3468,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "taildrop-gui"
+name = "tailwheel"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "taildrop-core",

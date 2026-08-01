@@ -5,7 +5,7 @@ use taildrop_core::store::Store;
 use taildrop_core::{device_stats, poll_inbox_once, send_with_attribution, tailscale};
 
 #[derive(Parser)]
-#[command(name = "taildrop", version, about = "CLI companion for taildrop-gui")]
+#[command(name = "taildrop", version, about = "CLI companion for tailwheer")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -52,6 +52,9 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let store = Store::new(None)?;
+    if let Ok(settings) = store.load_settings() {
+        let _ = store.prune_history(settings.history_retention, chrono::Utc::now());
+    }
     match cli.command {
         Commands::Send { target, files } => cmd_send(&store, &target, &files),
         Commands::ConfirmDrop { action } => cmd_confirm_drop(&store, action),
@@ -61,6 +64,8 @@ fn run() -> Result<()> {
 
 fn cmd_send(store: &Store, target: &str, files: &[PathBuf]) -> Result<()> {
     let status = tailscale::status()?;
+
+    let batch_id = uuid::Uuid::new_v4().to_string();
     let mut any_failed = false;
     for file in files {
         match send_with_attribution(
@@ -69,6 +74,7 @@ fn cmd_send(store: &Store, target: &str, files: &[PathBuf]) -> Result<()> {
             &status.self_peer.dns_name,
             target,
             file,
+            Some(&batch_id),
         ) {
             Ok(record) => {
                 println!(
@@ -168,9 +174,9 @@ fn cmd_status(store: &Store) -> Result<()> {
     );
     for d in stats.devices {
         let label = if d.peer.is_self {
-            format!("{} (this device)", d.peer.hostname)
+            format!("{} (this device)", d.peer.alias)
         } else {
-            d.peer.hostname.clone()
+            d.peer.alias.clone()
         };
         let online = if d.peer.online { "online" } else { "offline" };
         let ip = d.peer.tailscale_ips.first().cloned().unwrap_or_default();

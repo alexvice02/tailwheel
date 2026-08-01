@@ -9,20 +9,23 @@ use models::{
     ConflictPolicy, DeviceStats, PendingIncoming, Settings, TransferDirection, TransferRecord,
     TransferStatus,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use store::{SidecarMeta, Store};
 
 /// Send `file` to `target`, first pushing a small `.tdmeta.json` sidecar so
-/// that a receiver also running taildrop-gui/taildrop-cli can attribute the
+/// that a receiver also running tailwheel/taildrop-cli can attribute the
 /// sender. Records the attempt in history either way (Completed on success,
 /// Failed with the error message otherwise) so the CLI and GUI history views
-/// agree on what happened.
+/// agree on what happened. `batch_id` should be the same value for every file
+/// that was queued up in one send action, so the UI can group them; pass
+/// `None` for a lone file.
 pub fn send_with_attribution(
     store: &Store,
     self_hostname: &str,
     self_dns_name: &str,
     target: &str,
     file: &Path,
+    batch_id: Option<&str>,
 ) -> Result<TransferRecord> {
     let file_name = file
         .file_name()
@@ -66,6 +69,7 @@ pub fn send_with_attribution(
         },
         saved_path: None,
         error: result.as_ref().err().map(|e| e.to_string()),
+        batch_id: batch_id.map(|s| s.to_string()),
     };
     store.append_history(record.clone())?;
     result.map(|_| record)
@@ -126,4 +130,72 @@ pub fn device_stats(store: &Store) -> Result<DeviceStats> {
 
 pub fn load_or_init_settings(store: &Store) -> Result<Settings> {
     store.load_settings()
+}
+
+/// Expand file-picker output into a flat list of sendable files. Taildrop
+/// (like Tailscale's own client) only ever transfers individual files, so
+/// when the user picks a directory via the "Browse folder" option we walk it
+/// and queue every file underneath instead of trying to send the directory
+/// itself. Paths that are already files pass through unchanged; symlinks and
+/// other non-regular entries are silently skipped rather than erroring, so
+/// one odd entry doesn't block the rest of the picked files.
+pub fn expand_send_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for path in paths {
+        collect_files(path, &mut files)?;
+    }
+    Ok(files)
+}
+
+fn collect_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+    if metadata.is_dir() {
+        let mut entries: Vec<_> = std::fs::read_dir(path)
+            .map_err(|e| error::TaildropError::Io(e.to_string()))?
+            .filter_map(|e| e.ok())
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            collect_files(&entry.path(), out)?;
+        }
+    } else if metadata.is_file() {
+        out.push(path.to_path_buf());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_send_paths_walks_directories_and_passes_through_files() {
+        let tmp = std::env::temp_dir().join(format!("tailwheel-expand-test-{}", uuid::Uuid::new_v4()));
+        let nested = tmp.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(tmp.join("a.txt"), b"a").unwrap();
+        std::fs::write(nested.join("b.txt"), b"b").unwrap();
+
+        let result = expand_send_paths(&[tmp.clone()]).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&tmp.join("a.txt")));
+        assert!(result.contains(&nested.join("b.txt")));
+
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn expand_send_paths_passes_plain_files_through() {
+        let tmp = std::env::temp_dir().join(format!("tailwheel-expand-file-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, b"x").unwrap();
+
+        let result = expand_send_paths(&[tmp.clone()]).unwrap();
+
+        assert_eq!(result, vec![tmp.clone()]);
+        std::fs::remove_file(&tmp).unwrap();
+    }
 }

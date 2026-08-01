@@ -9,7 +9,7 @@ use tauri::{
 /// `lib.rs`), so this tray is the only way back in once the window is
 /// dismissed.
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
-    let open_item = MenuItem::with_id(app, "open", "Open taildrop-gui", true, None::<&str>)?;
+    let open_item = MenuItem::with_id(app, "open", "Open tailwheel", true, None::<&str>)?;
     let send_item = MenuItem::with_id(app, "send", "Send file...", true, None::<&str>)?;
     let history_item = MenuItem::with_id(app, "history", "Recent transfers", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
@@ -24,7 +24,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         .icon(app.default_window_icon().cloned().unwrap())
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .tooltip("taildrop-gui")
+        .tooltip("tailwheel")
         .on_menu_event(|app, event| {
             let route = match event.id().as_ref() {
                 "open" => Some("/"),

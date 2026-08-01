@@ -9,7 +9,8 @@
 
 use crate::error::{Result, TaildropError};
 use crate::models::{
-    ConflictPolicy, PendingIncoming, Settings, TransferDirection, TransferRecord, TransferStatus,
+    ConflictPolicy, HistoryRetention, PendingIncoming, Settings, TransferDirection, TransferRecord,
+    TransferStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -18,7 +19,7 @@ use std::path::{Path, PathBuf};
 const SIDECAR_SUFFIX: &str = ".tdmeta.json";
 
 /// Metadata sent as a small sidecar file alongside a real payload when both
-/// sides happen to run taildrop-gui/taildrop-cli, so the receiver can show
+/// sides happen to run tailwheel/taildrop-cli, so the receiver can show
 /// "X sent you Y" instead of just "a file arrived". Tailscale's own LocalAPI
 /// (`WaitingFile { Name, Size }`) exposes no sender identity at all, so
 /// there's no way to get this from tailscaled itself — see the taildrop-core
@@ -49,16 +50,16 @@ pub struct Store {
 }
 
 impl Store {
-    /// Uses the platform app-data directory (e.g. `~/.local/share/taildrop-gui`
-    /// on Linux, `~/Library/Application Support/taildrop-gui` on macOS,
-    /// `%APPDATA%\taildrop-gui` on Windows). Pass an explicit `root` (e.g. in
+    /// Uses the platform app-data directory (e.g. `~/.local/share/tailwheel`
+    /// on Linux, `~/Library/Application Support/tailwheel` on macOS,
+    /// `%APPDATA%\tailwheel` on Windows). Pass an explicit `root` (e.g. in
     /// tests) to override.
     pub fn new(root: Option<PathBuf>) -> Result<Self> {
         let root = match root {
             Some(r) => r,
             None => dirs::data_dir()
                 .ok_or_else(|| TaildropError::Io("no app data directory for this platform".into()))?
-                .join("taildrop-gui"),
+                .join("tailwheel"),
         };
         fs::create_dir_all(&root).map_err(|e| TaildropError::Io(e.to_string()))?;
         fs::create_dir_all(root.join("staging")).map_err(|e| TaildropError::Io(e.to_string()))?;
@@ -124,6 +125,10 @@ impl Store {
         let mut state: HistoryState = Self::read_json(&self.history_path())?;
         state.records.insert(0, record);
         Self::write_json(&self.history_path(), &state)
+    }
+
+    pub fn clear_history(&self) -> Result<()> {
+        Self::write_json(&self.history_path(), &HistoryState::default())
     }
 
     // --- pending incoming ---------------------------------------------------
@@ -255,6 +260,7 @@ impl Store {
             status: TransferStatus::Completed,
             saved_path: Some(dest_path.to_string_lossy().into_owned()),
             error: None,
+            batch_id: None,
         };
         self.append_history(record.clone())?;
         Ok(record)
@@ -284,9 +290,37 @@ impl Store {
             status: TransferStatus::Rejected,
             saved_path: None,
             error: None,
+            batch_id: None,
         };
         self.append_history(record.clone())?;
         Ok(record)
+    }
+
+    /// Delete history entries older than `retention` allows, as of `now`.
+    /// A no-op for `HistoryRetention::Never`. Called opportunistically (on
+    /// poll ticks and right after a settings change) rather than on a
+    /// separate scheduler, since this is a single-user desktop app and the
+    /// history file is small enough that a full rewrite is cheap.
+    pub fn prune_history(&self, retention: HistoryRetention, now: chrono::DateTime<chrono::Utc>) -> Result<()> {
+        let Some(max_age_days) = retention.max_age_days() else {
+            return Ok(());
+        };
+        let cutoff = now - chrono::Duration::days(max_age_days);
+
+        let mut state: HistoryState = Self::read_json(&self.history_path())?;
+        let before = state.records.len();
+        state.records.retain(|r| {
+            match chrono::DateTime::parse_from_rfc3339(&r.timestamp) {
+                Ok(t) => t.with_timezone(&chrono::Utc) >= cutoff,
+                // Keep anything we can't parse rather than silently losing it.
+                Err(_) => true,
+            }
+        });
+
+        if state.records.len() != before {
+            Self::write_json(&self.history_path(), &state)?;
+        }
+        Ok(())
     }
 }
 
@@ -333,7 +367,7 @@ mod tests {
     use super::*;
 
     /// Isolated scratch dir per test so runs can't interfere with each other
-    /// or a real `~/.local/share/taildrop-gui`.
+    /// or a real `~/.local/share/tailwheel`.
     fn test_store() -> (Store, PathBuf) {
         let root = std::env::temp_dir().join(format!("taildrop-core-test-{}", uuid::Uuid::new_v4()));
         (Store::new(Some(root.clone())).unwrap(), root)
@@ -485,6 +519,66 @@ mod tests {
         assert_eq!(record.status, TransferStatus::Rejected);
         assert!(!file_path.exists());
         assert!(store.list_pending().unwrap().is_empty());
+        cleanup(root);
+    }
+
+    fn fake_record(id: &str, timestamp: String) -> TransferRecord {
+        TransferRecord {
+            id: id.to_string(),
+            direction: TransferDirection::Sent,
+            peer_hostname: "somewhere".into(),
+            peer_dns_name: None,
+            file_name: "f.txt".into(),
+            size: 1,
+            timestamp,
+            status: TransferStatus::Completed,
+            saved_path: None,
+            error: None,
+            batch_id: None,
+        }
+    }
+
+    #[test]
+    fn prune_history_removes_only_entries_older_than_retention() {
+        let (store, root) = test_store();
+        let now = chrono::Utc::now();
+
+        store.append_history(fake_record("old", (now - chrono::Duration::days(10)).to_rfc3339())).unwrap();
+        store.append_history(fake_record("recent", (now - chrono::Duration::hours(1)).to_rfc3339())).unwrap();
+
+        store.prune_history(HistoryRetention::Weekly, now).unwrap();
+
+        let remaining = store.list_history().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "recent");
+        cleanup(root);
+    }
+
+    #[test]
+    fn prune_history_never_keeps_everything() {
+        let (store, root) = test_store();
+        let now = chrono::Utc::now();
+
+        store.append_history(fake_record("ancient", (now - chrono::Duration::days(9999)).to_rfc3339())).unwrap();
+
+        store.prune_history(HistoryRetention::Never, now).unwrap();
+
+        assert_eq!(store.list_history().unwrap().len(), 1);
+        cleanup(root);
+    }
+
+    #[test]
+    fn clear_history_empties_the_log() {
+        let (store, root) = test_store();
+        let now = chrono::Utc::now();
+
+        store.append_history(fake_record("one", now.to_rfc3339())).unwrap();
+        store.append_history(fake_record("two", now.to_rfc3339())).unwrap();
+        assert_eq!(store.list_history().unwrap().len(), 2);
+
+        store.clear_history().unwrap();
+
+        assert!(store.list_history().unwrap().is_empty());
         cleanup(root);
     }
 
