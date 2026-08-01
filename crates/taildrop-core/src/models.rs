@@ -4,10 +4,6 @@ use serde::{Deserialize, Serialize};
 pub struct Peer {
     pub id: String,
     pub hostname: String,
-    /// The name Tailscale shows for this device (first label of its DNS
-    /// name). This is what users set via "Edit machine name" in the admin
-    /// console — it can differ from `hostname`, which is just whatever the
-    /// OS reports and never changes on rename.
     pub alias: String,
     pub dns_name: String,
     pub os: String,
@@ -87,6 +83,15 @@ pub struct TransferRecord {
     pub status: TransferStatus,
     pub saved_path: Option<String>,
     pub error: Option<String>,
+    /// Shared by every file sent in the same "Send" action (e.g. everything
+    /// under a picked folder, or a multi-file drag-drop), so the UI can
+    /// present them as one transfer instead of one row per file. `tailscale
+    /// file cp` itself has no notion of a multi-file transfer — this is
+    /// purely our own bookkeeping, generated client-side per send. Absent
+    /// (`None`) for single-file sends and for everything received, and for
+    /// history recorded before this field existed.
+    #[serde(default)]
+    pub batch_id: Option<String>,
 }
 
 /// A file that has been pulled out of the Tailscale daemon's inbox into our
@@ -120,12 +125,44 @@ pub struct DeviceStats {
     pub devices: Vec<DeviceStat>,
 }
 
+/// How long to keep transfer history before it's automatically pruned.
+/// `Never` preserves today's behavior (history grows forever) so existing
+/// installs don't lose data just from upgrading.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HistoryRetention {
+    Daily,
+    Weekly,
+    Monthly,
+    Never,
+}
+
+impl Default for HistoryRetention {
+    fn default() -> Self {
+        HistoryRetention::Never
+    }
+}
+
+impl HistoryRetention {
+    /// `None` means "keep forever".
+    pub fn max_age_days(&self) -> Option<i64> {
+        match self {
+            HistoryRetention::Daily => Some(1),
+            HistoryRetention::Weekly => Some(7),
+            HistoryRetention::Monthly => Some(30),
+            HistoryRetention::Never => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub save_dir: String,
     pub auto_accept: bool,
     pub conflict_policy: ConflictPolicy,
     pub poll_interval_secs: u64,
+    #[serde(default)]
+    pub history_retention: HistoryRetention,
 }
 
 impl Default for Settings {
@@ -139,6 +176,7 @@ impl Default for Settings {
             auto_accept: false,
             conflict_policy: ConflictPolicy::Rename,
             poll_interval_secs: 3,
+            history_retention: HistoryRetention::default(),
         }
     }
 }

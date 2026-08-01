@@ -52,6 +52,9 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let store = Store::new(None)?;
+    if let Ok(settings) = store.load_settings() {
+        let _ = store.prune_history(settings.history_retention, chrono::Utc::now());
+    }
     match cli.command {
         Commands::Send { target, files } => cmd_send(&store, &target, &files),
         Commands::ConfirmDrop { action } => cmd_confirm_drop(&store, action),
@@ -61,6 +64,8 @@ fn run() -> Result<()> {
 
 fn cmd_send(store: &Store, target: &str, files: &[PathBuf]) -> Result<()> {
     let status = tailscale::status()?;
+
+    let batch_id = uuid::Uuid::new_v4().to_string();
     let mut any_failed = false;
     for file in files {
         match send_with_attribution(
@@ -69,6 +74,7 @@ fn cmd_send(store: &Store, target: &str, files: &[PathBuf]) -> Result<()> {
             &status.self_peer.dns_name,
             target,
             file,
+            Some(&batch_id),
         ) {
             Ok(record) => {
                 println!(

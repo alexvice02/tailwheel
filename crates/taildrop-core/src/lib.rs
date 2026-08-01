@@ -16,13 +16,16 @@ use store::{SidecarMeta, Store};
 /// that a receiver also running tailwheel/taildrop-cli can attribute the
 /// sender. Records the attempt in history either way (Completed on success,
 /// Failed with the error message otherwise) so the CLI and GUI history views
-/// agree on what happened.
+/// agree on what happened. `batch_id` should be the same value for every file
+/// that was queued up in one send action, so the UI can group them; pass
+/// `None` for a lone file.
 pub fn send_with_attribution(
     store: &Store,
     self_hostname: &str,
     self_dns_name: &str,
     target: &str,
     file: &Path,
+    batch_id: Option<&str>,
 ) -> Result<TransferRecord> {
     let file_name = file
         .file_name()
@@ -66,6 +69,7 @@ pub fn send_with_attribution(
         },
         saved_path: None,
         error: result.as_ref().err().map(|e| e.to_string()),
+        batch_id: batch_id.map(|s| s.to_string()),
     };
     store.append_history(record.clone())?;
     result.map(|_| record)

@@ -23,6 +23,10 @@ pub fn spawn(app_handle: AppHandle, store: Arc<Store>) {
             }
         };
 
+        if let Err(e) = store.prune_history(settings.history_retention, chrono::Utc::now()) {
+            eprintln!("taildrop: history prune failed: {e}");
+        }
+
         match taildrop_core::poll_inbox_once(&store, settings.conflict_policy) {
             Ok(new_items) if !new_items.is_empty() => {
                 if settings.auto_accept {

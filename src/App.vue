@@ -94,7 +94,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ resizing }">
     <nav
       class="sidebar"
       :class="{ collapsed: sidebarCollapsed, resizing }"
@@ -192,6 +192,15 @@ body {
   height: 100vh;
   overflow: hidden;
   position: relative;
+}
+
+.app-shell.resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+
+.app-shell.resizing * {
+  cursor: col-resize;
 }
 
 .sidebar {
@@ -447,6 +456,7 @@ input[type="text"],
 input[type="number"],
 select {
   flex: 1;
+  width: 100%;
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--border);

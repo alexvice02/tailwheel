@@ -12,8 +12,10 @@ import {
   Send as SendIcon,
   CircleCheck,
   CircleX,
+  ChevronRight,
 } from "@lucide/vue";
 import { api } from "../lib/api";
+import { formatSize } from "../lib/format";
 
 const targets = ref([]);
 const selectedTarget = ref("");
@@ -75,20 +77,33 @@ async function browseFolder() {
   }
 }
 
+function batchSize(batch) {
+  return batch.files.reduce((sum, f) => sum + (f.size ?? 0), 0);
+}
+
+function batchSummary(batch) {
+  const failed = batch.files.filter((f) => !f.ok).length;
+  if (failed === 0) return "all sent";
+  if (failed === batch.files.length) return "all failed";
+  return `${failed} failed`;
+}
+
 async function sendAll() {
   if (!selectedTarget.value || droppedFiles.value.length === 0) return;
   sending.value = true;
-  results.value = [];
+  const batchId = crypto.randomUUID();
   const toSend = droppedFiles.value;
   droppedFiles.value = [];
+  const files = [];
   for (const file of toSend) {
     try {
-      await api.sendFile(selectedTarget.value, file.path);
-      results.value.unshift({ name: file.name, ok: true });
+      const record = await api.sendFile(selectedTarget.value, file.path, batchId);
+      files.push({ name: file.name, ok: true, size: record.size });
     } catch (e) {
-      results.value.unshift({ name: file.name, ok: false, error: String(e) });
+      files.push({ name: file.name, ok: false, error: String(e) });
     }
   }
+  results.value.unshift({ id: batchId, target: selectedTarget.value, files, expanded: false });
   sending.value = false;
 }
 
@@ -165,15 +180,38 @@ onUnmounted(() => unlisten?.());
       <SendIcon :size="15" /> {{ sending ? "Sending..." : "Send" }}
     </button>
 
-    <TransitionGroup tag="ul" name="list" class="results">
-      <li v-for="r in results" :key="r.name + r.ok" :class="r.ok ? 'ok' : 'error'">
-        <span class="file-name">
-          <component :is="r.ok ? CircleCheck : CircleX" :size="14" />
-          {{ r.name }}
-        </span>
-        <span>{{ r.ok ? "sent" : r.error }}</span>
-      </li>
-    </TransitionGroup>
+    <div v-if="results.length" class="sent-panel">
+      <div class="sent-panel-header">
+        <SendIcon :size="14" /> <span>Sent files</span>
+      </div>
+      <TransitionGroup tag="div" name="list" class="sent-groups">
+        <div v-for="batch in results" :key="batch.id" class="sent-group">
+          <template v-if="batch.files.length > 1">
+            <button class="sent-group-header" @click="batch.expanded = !batch.expanded">
+              <ChevronRight :size="14" class="chevron" :class="{ expanded: batch.expanded }" />
+              <Folder :size="15" />
+              <span class="group-title">{{ batch.files.length }} files to {{ batch.target }}</span>
+              <span class="group-size">{{ formatSize(batchSize(batch)) }}</span>
+              <span class="group-summary" :class="batchSummary(batch) === 'all sent' ? 'ok' : 'error'">
+                {{ batchSummary(batch) }}
+              </span>
+            </button>
+            <div v-if="batch.expanded" class="sent-group-body">
+              <div v-for="f in batch.files" :key="f.name" class="sent-row" :class="f.ok ? 'ok' : 'error'">
+                <component :is="f.ok ? CircleCheck : CircleX" :size="13" />
+                <span class="file-name">{{ f.name }}</span>
+                <span class="row-detail">{{ f.ok ? formatSize(f.size) : f.error }}</span>
+              </div>
+            </div>
+          </template>
+          <div v-else class="sent-row single" :class="batch.files[0].ok ? 'ok' : 'error'">
+            <component :is="batch.files[0].ok ? CircleCheck : CircleX" :size="14" />
+            <span class="file-name">{{ batch.files[0].name }} <span class="meta">→ {{ batch.target }}</span></span>
+            <span class="row-detail">{{ batch.files[0].ok ? formatSize(batch.files[0].size) : batch.files[0].error }}</span>
+          </div>
+        </div>
+      </TransitionGroup>
+    </div>
   </section>
 </template>
 
@@ -197,5 +235,125 @@ onUnmounted(() => unlisten?.());
   display: flex;
   gap: 8px;
   margin-bottom: 16px;
+}
+
+.sent-panel {
+  margin-top: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-alt);
+  overflow: hidden;
+}
+
+.sent-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.sent-groups {
+  padding: 6px;
+}
+
+.sent-group + .sent-group {
+  margin-top: 4px;
+}
+
+.sent-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+
+.sent-group-header:hover {
+  background: var(--panel);
+  border-color: var(--border);
+}
+
+.chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.group-title {
+  flex: 1;
+  font-weight: 500;
+}
+
+.group-size {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.group-summary {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sent-group-body {
+  padding: 2px 10px 6px 34px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  border-radius: 6px;
+}
+
+.sent-row.single:hover {
+  background: var(--panel);
+}
+
+.sent-row .file-name {
+  flex: 1;
+}
+
+.sent-row .meta {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.row-detail {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sent-row.ok svg,
+.group-summary.ok {
+  color: var(--ok);
+}
+
+.sent-row.error svg,
+.group-summary.error {
+  color: var(--danger);
+}
+
+.sent-row.error .row-detail {
+  color: var(--danger);
 }
 </style>

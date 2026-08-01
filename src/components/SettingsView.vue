@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderOpen, Zap, FileExclamationPoint, Timer, Save, Check } from "@lucide/vue";
+import { FolderOpen, Zap, FileExclamationPoint, Timer, Save, Check, Trash2 } from "@lucide/vue";
 import { api } from "../lib/api";
 
 const settings = ref(null);
@@ -30,7 +30,7 @@ async function save() {
 </script>
 
 <template>
-  <section v-if="settings">
+  <section v-if="settings" class="settings-panel">
     <h1>Settings</h1>
 
     <label class="field">
@@ -60,23 +60,50 @@ async function save() {
       <input type="number" min="1" v-model.number="settings.poll_interval_secs" />
     </label>
 
-    <button class="primary" :disabled="saving" @click="save">
-      <Save :size="15" /> {{ saving ? "Saving..." : "Save settings" }}
-    </button>
-    <Transition name="pop">
-      <span v-if="saved" class="saved-hint"><Check :size="13" /> Saved</span>
-    </Transition>
+    <label class="field">
+      <span><Trash2 :size="13" /> Automatically clear old transfer history</span>
+      <select v-model="settings.history_retention">
+        <option value="daily">Daily (keep last 24 hours)</option>
+        <option value="weekly">Weekly (keep last 7 days)</option>
+        <option value="monthly">Monthly (keep last 30 days)</option>
+        <option value="never">Never (keep everything)</option>
+      </select>
+    </label>
+
+    <div class="actions-row">
+      <button class="primary" :disabled="saving" @click="save">
+        <Save :size="15" /> {{ saving ? "Saving..." : "Save settings" }}
+      </button>
+      <Transition name="pop">
+        <span v-if="saved" class="saved-hint"><Check :size="13" /> Saved</span>
+      </Transition>
+    </div>
   </section>
 </template>
 
 <style scoped>
+.settings-panel {
+  max-width: 460px;
+}
+
+.field {
+  width: 100%;
+}
+
 .field > span {
   display: flex;
   align-items: center;
   gap: 5px;
 }
 
+.actions-row {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
+}
+
 .saved-hint {
+  margin-left: 10px;
   display: inline-flex;
   align-items: center;
   gap: 4px;

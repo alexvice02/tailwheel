@@ -9,7 +9,8 @@
 
 use crate::error::{Result, TaildropError};
 use crate::models::{
-    ConflictPolicy, PendingIncoming, Settings, TransferDirection, TransferRecord, TransferStatus,
+    ConflictPolicy, HistoryRetention, PendingIncoming, Settings, TransferDirection, TransferRecord,
+    TransferStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -255,6 +256,7 @@ impl Store {
             status: TransferStatus::Completed,
             saved_path: Some(dest_path.to_string_lossy().into_owned()),
             error: None,
+            batch_id: None,
         };
         self.append_history(record.clone())?;
         Ok(record)
@@ -284,9 +286,37 @@ impl Store {
             status: TransferStatus::Rejected,
             saved_path: None,
             error: None,
+            batch_id: None,
         };
         self.append_history(record.clone())?;
         Ok(record)
+    }
+
+    /// Delete history entries older than `retention` allows, as of `now`.
+    /// A no-op for `HistoryRetention::Never`. Called opportunistically (on
+    /// poll ticks and right after a settings change) rather than on a
+    /// separate scheduler, since this is a single-user desktop app and the
+    /// history file is small enough that a full rewrite is cheap.
+    pub fn prune_history(&self, retention: HistoryRetention, now: chrono::DateTime<chrono::Utc>) -> Result<()> {
+        let Some(max_age_days) = retention.max_age_days() else {
+            return Ok(());
+        };
+        let cutoff = now - chrono::Duration::days(max_age_days);
+
+        let mut state: HistoryState = Self::read_json(&self.history_path())?;
+        let before = state.records.len();
+        state.records.retain(|r| {
+            match chrono::DateTime::parse_from_rfc3339(&r.timestamp) {
+                Ok(t) => t.with_timezone(&chrono::Utc) >= cutoff,
+                // Keep anything we can't parse rather than silently losing it.
+                Err(_) => true,
+            }
+        });
+
+        if state.records.len() != before {
+            Self::write_json(&self.history_path(), &state)?;
+        }
+        Ok(())
     }
 }
 
@@ -485,6 +515,51 @@ mod tests {
         assert_eq!(record.status, TransferStatus::Rejected);
         assert!(!file_path.exists());
         assert!(store.list_pending().unwrap().is_empty());
+        cleanup(root);
+    }
+
+    fn fake_record(id: &str, timestamp: String) -> TransferRecord {
+        TransferRecord {
+            id: id.to_string(),
+            direction: TransferDirection::Sent,
+            peer_hostname: "somewhere".into(),
+            peer_dns_name: None,
+            file_name: "f.txt".into(),
+            size: 1,
+            timestamp,
+            status: TransferStatus::Completed,
+            saved_path: None,
+            error: None,
+            batch_id: None,
+        }
+    }
+
+    #[test]
+    fn prune_history_removes_only_entries_older_than_retention() {
+        let (store, root) = test_store();
+        let now = chrono::Utc::now();
+
+        store.append_history(fake_record("old", (now - chrono::Duration::days(10)).to_rfc3339())).unwrap();
+        store.append_history(fake_record("recent", (now - chrono::Duration::hours(1)).to_rfc3339())).unwrap();
+
+        store.prune_history(HistoryRetention::Weekly, now).unwrap();
+
+        let remaining = store.list_history().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "recent");
+        cleanup(root);
+    }
+
+    #[test]
+    fn prune_history_never_keeps_everything() {
+        let (store, root) = test_store();
+        let now = chrono::Utc::now();
+
+        store.append_history(fake_record("ancient", (now - chrono::Duration::days(9999)).to_rfc3339())).unwrap();
+
+        store.prune_history(HistoryRetention::Never, now).unwrap();
+
+        assert_eq!(store.list_history().unwrap().len(), 1);
         cleanup(root);
     }
 

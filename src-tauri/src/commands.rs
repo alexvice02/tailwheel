@@ -22,7 +22,13 @@ pub fn get_settings(state: State<AppState>) -> Result<Settings, String> {
 
 #[tauri::command]
 pub fn update_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
-    to_str_err(state.store.save_settings(&settings))
+    to_str_err(state.store.save_settings(&settings))?;
+
+    to_str_err(
+        state
+            .store
+            .prune_history(settings.history_retention, chrono::Utc::now()),
+    )
 }
 
 #[tauri::command]
@@ -49,7 +55,12 @@ pub fn expand_send_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub fn send_file(state: State<AppState>, target: String, path: String) -> Result<TransferRecord, String> {
+pub fn send_file(
+    state: State<AppState>,
+    target: String,
+    path: String,
+    batch_id: Option<String>,
+) -> Result<TransferRecord, String> {
     let status = to_str_err(tailscale::status())?;
     to_str_err(send_with_attribution(
         &state.store,
@@ -57,6 +68,7 @@ pub fn send_file(state: State<AppState>, target: String, path: String) -> Result
         &status.self_peer.dns_name,
         &target,
         Path::new(&path),
+        batch_id.as_deref(),
     ))
 }
 
