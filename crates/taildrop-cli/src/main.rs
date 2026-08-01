@@ -5,7 +5,7 @@ use taildrop_core::store::Store;
 use taildrop_core::{device_stats, poll_inbox_once, send_with_attribution, tailscale};
 
 #[derive(Parser)]
-#[command(name = "taildrop", version, about = "CLI companion for taildrop-gui")]
+#[command(name = "taildrop", version, about = "CLI companion for tailwheer")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -168,9 +168,9 @@ fn cmd_status(store: &Store) -> Result<()> {
     );
     for d in stats.devices {
         let label = if d.peer.is_self {
-            format!("{} (this device)", d.peer.hostname)
+            format!("{} (this device)", d.peer.alias)
         } else {
-            d.peer.hostname.clone()
+            d.peer.alias.clone()
         };
         let online = if d.peer.online { "online" } else { "offline" };
         let ip = d.peer.tailscale_ips.first().cloned().unwrap_or_default();

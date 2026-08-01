@@ -35,6 +35,19 @@ pub fn get_cp_targets() -> Result<Vec<CpTarget>, String> {
     to_str_err(tailscale::cp_targets())
 }
 
+/// Flattens file-picker output (which may include directories, when the
+/// user chose "Browse folder") into a plain list of file paths to send.
+#[tauri::command]
+pub fn expand_send_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
+    let paths: Vec<std::path::PathBuf> = paths.into_iter().map(std::path::PathBuf::from).collect();
+    to_str_err(taildrop_core::expand_send_paths(&paths)).map(|files| {
+        files
+            .into_iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    })
+}
+
 #[tauri::command]
 pub fn send_file(state: State<AppState>, target: String, path: String) -> Result<TransferRecord, String> {
     let status = to_str_err(tailscale::status())?;

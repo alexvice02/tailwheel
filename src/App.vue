@@ -1,6 +1,16 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
+import {
+  Send as SendIcon,
+  Inbox as InboxIcon,
+  RotateCcwClock as HistoryIcon,
+  Laptop,
+  Settings as SettingsIcon,
+  Plane,
+  PanelLeftClose,
+  PanelLeft,
+} from "@lucide/vue";
 import SendView from "./components/SendView.vue";
 import InboxView from "./components/InboxView.vue";
 import HistoryView from "./components/HistoryView.vue";
@@ -9,11 +19,11 @@ import SettingsView from "./components/SettingsView.vue";
 import { api } from "./lib/api";
 
 const navItems = [
-  { path: "/send", label: "Send", component: SendView },
-  { path: "/inbox", label: "Inbox", component: InboxView },
-  { path: "/history", label: "History", component: HistoryView },
-  { path: "/devices", label: "Devices", component: DevicesView },
-  { path: "/settings", label: "Settings", component: SettingsView },
+  { path: "/send", label: "Send", component: SendView, icon: SendIcon },
+  { path: "/inbox", label: "Inbox", component: InboxView, icon: InboxIcon },
+  { path: "/history", label: "History", component: HistoryView, icon: HistoryIcon },
+  { path: "/devices", label: "Devices", component: DevicesView, icon: Laptop },
+  { path: "/settings", label: "Settings", component: SettingsView, icon: SettingsIcon },
 ];
 const aliases = { "/": "/send" };
 
@@ -24,6 +34,42 @@ const unlisteners = [];
 const currentComponent = computed(
   () => navItems.find((n) => n.path === current.value)?.component ?? SendView,
 );
+
+// --- sidebar: resizable + collapsible (Obsidian-style) ---------------------
+const WIDTH_KEY = "tailwheel:sidebar-width";
+const COLLAPSED_KEY = "tailwheel:sidebar-collapsed";
+const MIN_WIDTH = 200;
+const MAX_WIDTH = 440;
+
+const sidebarWidth = ref(Number(localStorage.getItem(WIDTH_KEY)) || 240);
+const sidebarCollapsed = ref(localStorage.getItem(COLLAPSED_KEY) === "1");
+const resizing = ref(false);
+
+watch(sidebarWidth, (w) => localStorage.setItem(WIDTH_KEY, String(w)));
+watch(sidebarCollapsed, (c) => localStorage.setItem(COLLAPSED_KEY, c ? "1" : "0"));
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value;
+}
+
+function startResize(event) {
+  if (sidebarCollapsed.value) return;
+  resizing.value = true;
+  const startX = event.clientX;
+  const startWidth = sidebarWidth.value;
+
+  function onMove(e) {
+    const next = startWidth + (e.clientX - startX);
+    sidebarWidth.value = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, next));
+  }
+  function onUp() {
+    resizing.value = false;
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+  }
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
 
 async function refreshPendingCount() {
   try {
@@ -49,23 +95,47 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
 
 <template>
   <div class="app-shell">
-    <nav class="sidebar">
-      <div class="brand">Taildrop</div>
-      <button
-        v-for="item in navItems"
-        :key="item.path"
-        class="nav-item"
-        :class="{ active: current === item.path }"
-        @click="current = item.path"
-      >
-        {{ item.label }}
-        <span v-if="item.path === '/inbox' && pendingCount > 0" class="badge">{{
-          pendingCount
-        }}</span>
-      </button>
+    <nav
+      class="sidebar"
+      :class="{ collapsed: sidebarCollapsed, resizing }"
+      :style="{ width: sidebarCollapsed ? '0px' : sidebarWidth + 'px' }"
+    >
+      <div class="sidebar-inner">
+        <div class="brand">
+          <span class="brand-mark"><Plane :size="18" /></span>
+          <span class="brand-name">tailwheel</span>
+          <button class="icon-btn collapse-btn" title="Hide sidebar" @click="toggleSidebar">
+            <PanelLeftClose :size="16" />
+          </button>
+        </div>
+        <button
+          v-for="item in navItems"
+          :key="item.path"
+          class="nav-item"
+          :class="{ active: current === item.path }"
+          @click="current = item.path"
+        >
+          <component :is="item.icon" :size="17" class="nav-icon" />
+          <span class="nav-label">{{ item.label }}</span>
+          <Transition name="pop">
+            <span v-if="item.path === '/inbox' && pendingCount > 0" :key="pendingCount" class="badge">{{
+              pendingCount
+            }}</span>
+          </Transition>
+        </button>
+      </div>
+      <div v-if="!sidebarCollapsed" class="sidebar-resizer" @pointerdown="startResize"></div>
     </nav>
+
     <main class="content">
-      <component :is="currentComponent" @pending-changed="refreshPendingCount" />
+      <Transition name="rail">
+        <button v-if="sidebarCollapsed" class="rail-toggle" title="Show sidebar" @click="toggleSidebar">
+          <PanelLeft :size="16" />
+        </button>
+      </Transition>
+      <Transition name="view" mode="out-in">
+        <component :is="currentComponent" :key="current" @pending-changed="refreshPendingCount" />
+      </Transition>
     </main>
   </div>
 </template>
@@ -73,28 +143,37 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
 <style>
 :root {
   color-scheme: light dark;
-  --bg: #f6f6f6;
+  --bg: #f3f4f8;
   --panel: #ffffff;
-  --border: #e2e2e2;
-  --text: #0f0f0f;
-  --muted: #6b6b6b;
-  --accent: #396cd8;
+  --panel-alt: #f8f9fc;
+  --border: #e3e5ee;
+  --text: #16171d;
+  --muted: #6c6f7e;
+  --accent: #4a6cf7;
+  --accent-2: #7c5cf0;
   --accent-text: #ffffff;
-  --danger: #c0392b;
-  --ok: #1f9d55;
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  --danger: #e0503f;
+  --ok: #21a366;
+  --shadow: 0 1px 2px rgba(20, 22, 40, 0.04), 0 8px 24px rgba(20, 22, 40, 0.06);
+  --shadow-sm: 0 1px 2px rgba(20, 22, 40, 0.06);
+  --radius: 10px;
+  font-family: "Inter", Avenir, Helvetica, Arial, sans-serif;
   font-size: 14px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1f1f1f;
-    --panel: #2a2a2a;
-    --border: #3c3c3c;
-    --text: #f2f2f2;
-    --muted: #a0a0a0;
-    --accent: #5b8bef;
-    --accent-text: #0f0f0f;
+    --bg: #17181f;
+    --panel: #1e2029;
+    --panel-alt: #23252f;
+    --border: #2f3140;
+    --text: #f1f2f6;
+    --muted: #9497a8;
+    --accent: #6e8bff;
+    --accent-2: #9d7bff;
+    --accent-text: #0f0f14;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.35);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   }
 }
 
@@ -112,45 +191,163 @@ body {
   display: flex;
   height: 100vh;
   overflow: hidden;
+  position: relative;
 }
 
 .sidebar {
-  width: 170px;
   flex-shrink: 0;
-  background: var(--panel);
+  position: relative;
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-alt) 100%);
   border-right: 1px solid var(--border);
+  overflow: hidden;
+  transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar.resizing {
+  transition: none;
+}
+
+.sidebar.collapsed {
+  border-right-color: transparent;
+}
+
+.sidebar-inner {
   display: flex;
   flex-direction: column;
-  padding: 12px 8px;
+  padding: 14px 10px;
+  width: 100%;
+  min-width: 200px;
+  height: 100%;
+}
+
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.sidebar-resizer:hover,
+.sidebar.resizing .sidebar-resizer {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.rail-toggle {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 16px;
+}
+
+.rail-enter-active,
+.rail-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.rail-enter-from,
+.rail-leave-to {
+  opacity: 0;
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 700;
-  font-size: 16px;
-  padding: 8px 12px 16px;
+  font-size: 15px;
+  padding: 6px 8px 18px;
+  letter-spacing: 0.2px;
+}
+
+.brand-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff;
+  transform: rotate(-45deg);
+}
+
+.brand-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.icon-btn:hover {
+  background: var(--border);
+  color: var(--text);
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   text-align: left;
-  padding: 8px 12px;
-  margin-bottom: 2px;
+  padding: 9px 10px;
+  margin-bottom: 3px;
   border: none;
   background: transparent;
   color: var(--text);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   font-size: 14px;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+
+.nav-icon {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: color 0.15s ease;
+}
+
+.nav-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .nav-item:hover {
-  background: var(--bg);
+  background: var(--border);
+  transform: translateX(1px);
 }
 
 .nav-item.active {
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: var(--accent-text);
+  box-shadow: var(--shadow-sm);
+}
+
+.nav-item.active .nav-icon {
   color: var(--accent-text);
 }
 
@@ -159,25 +356,59 @@ body {
   color: #fff;
   border-radius: 999px;
   font-size: 11px;
-  padding: 1px 6px;
+  line-height: 1;
+  padding: 3px 6px;
+  min-width: 8px;
+  text-align: center;
+}
+
+.pop-enter-active {
+  animation: pop 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .content {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 32px;
+  padding: 28px 36px;
+}
+
+.view-enter-active,
+.view-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.view-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.view-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 h1 {
-  font-size: 18px;
+  font-size: 19px;
   margin: 0 0 16px;
+  letter-spacing: -0.2px;
 }
 
 .section-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .section-header h1 {
@@ -217,15 +448,27 @@ input[type="number"],
 select {
   flex: 1;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--text);
   font-size: 14px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 button {
-  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 8px;
   border: 1px solid transparent;
   padding: 8px 14px;
   font-size: 14px;
@@ -233,12 +476,25 @@ button {
   background: var(--panel);
   color: var(--text);
   border-color: var(--border);
+  transition: transform 0.1s ease, box-shadow 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  box-shadow: var(--shadow-sm);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 button.primary {
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
   color: var(--accent-text);
-  border-color: var(--accent);
+  border-color: transparent;
+}
+
+button.primary:hover:not(:disabled) {
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 button.ghost {
@@ -252,17 +508,18 @@ button:disabled {
 
 .dropzone {
   border: 2px dashed var(--border);
-  border-radius: 10px;
-  padding: 32px;
+  border-radius: var(--radius);
+  padding: 36px;
   text-align: center;
   color: var(--muted);
   margin-bottom: 16px;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
 }
 
 .dropzone.over {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
+  transform: scale(1.01);
 }
 
 .file-list,
@@ -298,9 +555,17 @@ button:disabled {
   justify-content: space-between;
   padding: 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   margin-bottom: 8px;
   background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.pending-item:hover,
+.device-item:hover {
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
 }
 
 .pending-info,
@@ -343,6 +608,7 @@ button:disabled {
 
 .dot.online {
   background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent);
 }
 
 .tag {
@@ -367,6 +633,26 @@ button:disabled {
   margin-left: 10px;
   color: var(--ok);
   font-size: 13px;
+}
+
+.list-move,
+.list-enter-active,
+.list-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.list-enter-from {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+.list-leave-to {
+  opacity: 0;
+  transform: translateX(8px);
+}
+
+.list-leave-active {
+  position: absolute;
 }
 
 .history-table {

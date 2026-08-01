@@ -3467,7 +3467,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "taildrop-gui"
+name = "tailwheel"
 version = "0.1.0"
 dependencies = [
  "serde",

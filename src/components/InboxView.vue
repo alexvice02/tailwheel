@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from "vue";
 import { listen } from "@tauri-apps/api/event";
+import { RefreshCw, FileText, User, Check, X } from "@lucide/vue";
 import { api } from "../lib/api";
 import { formatSize } from "../lib/format";
 
@@ -48,24 +49,52 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
     <div class="section-header">
       <h1>Inbox</h1>
       <button class="ghost" :disabled="loading" @click="pollNow">
+        <RefreshCw :size="15" :class="{ spin: loading }" />
         {{ loading ? "Checking..." : "Check now" }}
       </button>
     </div>
 
     <p v-if="pending.length === 0" class="empty">No files waiting for confirmation.</p>
-    <ul v-else class="pending-list">
+    <TransitionGroup v-else tag="ul" name="list" class="pending-list">
       <li v-for="item in pending" :key="item.id" class="pending-item">
         <div class="pending-info">
-          <strong>{{ item.file_name }}</strong>
+          <strong><FileText :size="14" /> {{ item.file_name }}</strong>
           <span class="meta">
-            {{ item.sender_hostname ?? "unknown sender" }} · {{ formatSize(item.size) }}
+            <User :size="12" /> {{ item.sender_hostname ?? "unknown sender" }} · {{ formatSize(item.size) }}
           </span>
         </div>
         <div class="pending-actions">
-          <button class="primary" @click="accept(item.id)">Accept</button>
-          <button class="ghost" @click="reject(item.id)">Reject</button>
+          <button class="primary" @click="accept(item.id)"><Check :size="14" /> Accept</button>
+          <button class="ghost" @click="reject(item.id)"><X :size="14" /> Reject</button>
         </div>
       </li>
-    </ul>
+    </TransitionGroup>
   </section>
 </template>
+
+<style scoped>
+strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+</style>

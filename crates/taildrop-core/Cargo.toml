@@ -2,7 +2,7 @@
 name = "taildrop-core"
 version.workspace = true
 edition.workspace = true
-description = "Shared Taildrop integration, history and settings store for taildrop-gui and taildrop-cli"
+description = "Shared Taildrop integration, history and settings store for tailwheel and taildrop-cli"
 
 [dependencies]
 serde.workspace = true

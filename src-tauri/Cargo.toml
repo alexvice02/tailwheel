@@ -1,5 +1,5 @@
 [package]
-name = "taildrop-gui"
+name = "tailwheel"
 version.workspace = true
 description = "A Tauri App"
 authors = ["you"]

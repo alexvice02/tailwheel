@@ -1,6 +1,18 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open } from "@tauri-apps/plugin-dialog";
+import {
+  RefreshCw,
+  CloudUpload,
+  FolderOpen,
+  Folder,
+  FileText,
+  X,
+  Send as SendIcon,
+  CircleCheck,
+  CircleX,
+} from "@lucide/vue";
 import { api } from "../lib/api";
 
 const targets = ref([]);
@@ -8,6 +20,7 @@ const selectedTarget = ref("");
 const droppedFiles = ref([]);
 const isDragOver = ref(false);
 const sending = ref(false);
+const expanding = ref(false);
 const results = ref([]);
 const loadError = ref("");
 
@@ -15,6 +28,14 @@ let unlisten;
 
 function pathBaseName(path) {
   return path.split(/[\\/]/).pop();
+}
+
+function addFiles(paths) {
+  for (const p of paths) {
+    if (!droppedFiles.value.some((f) => f.path === p)) {
+      droppedFiles.value.push({ path: p, name: pathBaseName(p) });
+    }
+  }
 }
 
 async function loadTargets() {
@@ -32,6 +53,26 @@ async function loadTargets() {
 
 function removeFile(path) {
   droppedFiles.value = droppedFiles.value.filter((f) => f.path !== path);
+}
+
+async function browseFiles() {
+  const picked = await open({ multiple: true, directory: false });
+  if (picked) addFiles(Array.isArray(picked) ? picked : [picked]);
+}
+
+async function browseFolder() {
+  const picked = await open({ multiple: true, directory: true });
+  if (!picked) return;
+  const dirs = Array.isArray(picked) ? picked : [picked];
+  expanding.value = true;
+  try {
+    const files = await api.expandSendPaths(dirs);
+    addFiles(files);
+  } catch (e) {
+    loadError.value = String(e);
+  } finally {
+    expanding.value = false;
+  }
 }
 
 async function sendAll() {
@@ -61,11 +102,7 @@ onMounted(async () => {
       isDragOver.value = true;
     } else if (type === "drop") {
       isDragOver.value = false;
-      for (const p of event.payload.paths ?? []) {
-        if (!droppedFiles.value.some((f) => f.path === p)) {
-          droppedFiles.value.push({ path: p, name: pathBaseName(p) });
-        }
-      }
+      addFiles(event.payload.paths ?? []);
     } else {
       // "leave": drag cancelled without dropping.
       isDragOver.value = false;
@@ -88,7 +125,9 @@ onUnmounted(() => unlisten?.());
             {{ t.name }}{{ t.offline ? " (offline)" : "" }}
           </option>
         </select>
-        <button class="ghost" @click="loadTargets" title="Refresh device list">Refresh</button>
+        <button class="ghost" @click="loadTargets" title="Refresh device list">
+          <RefreshCw :size="15" />
+        </button>
       </div>
       <p v-if="loadError" class="error-text">{{ loadError }}</p>
       <p v-else-if="targets.length === 0" class="empty">
@@ -97,13 +136,25 @@ onUnmounted(() => unlisten?.());
     </label>
 
     <div class="dropzone" :class="{ over: isDragOver }">
-      <p v-if="droppedFiles.length === 0">Drag and drop files here</p>
-      <ul v-else class="file-list">
+      <template v-if="droppedFiles.length === 0">
+        <CloudUpload :size="30" class="drop-icon" />
+        <p>Drag and drop files here</p>
+      </template>
+      <TransitionGroup v-else tag="ul" name="list" class="file-list">
         <li v-for="f in droppedFiles" :key="f.path">
-          <span>{{ f.name }}</span>
-          <button class="ghost" @click="removeFile(f.path)">Remove</button>
+          <span class="file-name"><FileText :size="14" /> {{ f.name }}</span>
+          <button class="ghost icon-only" @click="removeFile(f.path)"><X :size="14" /></button>
         </li>
-      </ul>
+      </TransitionGroup>
+    </div>
+
+    <div class="browse-row">
+      <button class="ghost" :disabled="expanding" @click="browseFiles">
+        <FolderOpen :size="15" /> Browse files
+      </button>
+      <button class="ghost" :disabled="expanding" @click="browseFolder">
+        <Folder :size="15" /> {{ expanding ? "Reading folder…" : "Browse folder" }}
+      </button>
     </div>
 
     <button
@@ -111,13 +162,40 @@ onUnmounted(() => unlisten?.());
       :disabled="sending || !selectedTarget || droppedFiles.length === 0"
       @click="sendAll"
     >
-      {{ sending ? "Sending..." : "Send" }}
+      <SendIcon :size="15" /> {{ sending ? "Sending..." : "Send" }}
     </button>
 
-    <ul v-if="results.length" class="results">
-      <li v-for="(r, i) in results" :key="i" :class="r.ok ? 'ok' : 'error'">
-        {{ r.name }} — {{ r.ok ? "sent" : r.error }}
+    <TransitionGroup tag="ul" name="list" class="results">
+      <li v-for="r in results" :key="r.name + r.ok" :class="r.ok ? 'ok' : 'error'">
+        <span class="file-name">
+          <component :is="r.ok ? CircleCheck : CircleX" :size="14" />
+          {{ r.name }}
+        </span>
+        <span>{{ r.ok ? "sent" : r.error }}</span>
       </li>
-    </ul>
+    </TransitionGroup>
   </section>
 </template>
+
+<style scoped>
+.drop-icon {
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.file-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-only {
+  padding: 6px;
+}
+
+.browse-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+</style>

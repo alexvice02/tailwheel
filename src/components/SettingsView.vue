@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
+import { FolderOpen, Zap, FileExclamationPoint, Timer, Save, Check } from "@lucide/vue";
 import { api } from "../lib/api";
 
 const settings = ref(null);
@@ -33,7 +34,7 @@ async function save() {
     <h1>Settings</h1>
 
     <label class="field">
-      <span>Save received files to</span>
+      <span><FolderOpen :size="13" /> Save received files to</span>
       <div class="path-row">
         <input type="text" v-model="settings.save_dir" />
         <button class="ghost" @click="pickDir">Browse…</button>
@@ -42,11 +43,11 @@ async function save() {
 
     <label class="field checkbox">
       <input type="checkbox" v-model="settings.auto_accept" />
-      <span>Auto-accept incoming files (skip the confirmation prompt)</span>
+      <span><Zap :size="13" /> Auto-accept incoming files (skip the confirmation prompt)</span>
     </label>
 
     <label class="field">
-      <span>If a file with the same name already exists</span>
+      <span><FileExclamationPoint :size="13" /> If a file with the same name already exists</span>
       <select v-model="settings.conflict_policy">
         <option value="rename">Keep both (rename the new file)</option>
         <option value="overwrite">Overwrite</option>
@@ -55,13 +56,29 @@ async function save() {
     </label>
 
     <label class="field">
-      <span>Check for new files every (seconds)</span>
+      <span><Timer :size="13" /> Check for new files every (seconds)</span>
       <input type="number" min="1" v-model.number="settings.poll_interval_secs" />
     </label>
 
     <button class="primary" :disabled="saving" @click="save">
-      {{ saving ? "Saving..." : "Save settings" }}
+      <Save :size="15" /> {{ saving ? "Saving..." : "Save settings" }}
     </button>
-    <span v-if="saved" class="saved-hint">Saved</span>
+    <Transition name="pop">
+      <span v-if="saved" class="saved-hint"><Check :size="13" /> Saved</span>
+    </Transition>
   </section>
 </template>
+
+<style scoped>
+.field > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.saved-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+</style>

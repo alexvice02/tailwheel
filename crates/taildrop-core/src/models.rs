@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 pub struct Peer {
     pub id: String,
     pub hostname: String,
+    /// The name Tailscale shows for this device (first label of its DNS
+    /// name). This is what users set via "Edit machine name" in the admin
+    /// console — it can differ from `hostname`, which is just whatever the
+    /// OS reports and never changes on rename.
+    pub alias: String,
     pub dns_name: String,
     pub os: String,
     pub tailscale_ips: Vec<String>,

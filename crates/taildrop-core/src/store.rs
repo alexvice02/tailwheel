@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 const SIDECAR_SUFFIX: &str = ".tdmeta.json";
 
 /// Metadata sent as a small sidecar file alongside a real payload when both
-/// sides happen to run taildrop-gui/taildrop-cli, so the receiver can show
+/// sides happen to run tailwheel/taildrop-cli, so the receiver can show
 /// "X sent you Y" instead of just "a file arrived". Tailscale's own LocalAPI
 /// (`WaitingFile { Name, Size }`) exposes no sender identity at all, so
 /// there's no way to get this from tailscaled itself — see the taildrop-core
@@ -49,16 +49,16 @@ pub struct Store {
 }
 
 impl Store {
-    /// Uses the platform app-data directory (e.g. `~/.local/share/taildrop-gui`
-    /// on Linux, `~/Library/Application Support/taildrop-gui` on macOS,
-    /// `%APPDATA%\taildrop-gui` on Windows). Pass an explicit `root` (e.g. in
+    /// Uses the platform app-data directory (e.g. `~/.local/share/tailwheel`
+    /// on Linux, `~/Library/Application Support/tailwheel` on macOS,
+    /// `%APPDATA%\tailwheel` on Windows). Pass an explicit `root` (e.g. in
     /// tests) to override.
     pub fn new(root: Option<PathBuf>) -> Result<Self> {
         let root = match root {
             Some(r) => r,
             None => dirs::data_dir()
                 .ok_or_else(|| TaildropError::Io("no app data directory for this platform".into()))?
-                .join("taildrop-gui"),
+                .join("tailwheel"),
         };
         fs::create_dir_all(&root).map_err(|e| TaildropError::Io(e.to_string()))?;
         fs::create_dir_all(root.join("staging")).map_err(|e| TaildropError::Io(e.to_string()))?;
@@ -333,7 +333,7 @@ mod tests {
     use super::*;
 
     /// Isolated scratch dir per test so runs can't interfere with each other
-    /// or a real `~/.local/share/taildrop-gui`.
+    /// or a real `~/.local/share/tailwheel`.
     fn test_store() -> (Store, PathBuf) {
         let root = std::env::temp_dir().join(format!("taildrop-core-test-{}", uuid::Uuid::new_v4()));
         (Store::new(Some(root.clone())).unwrap(), root)

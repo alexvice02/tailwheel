@@ -75,10 +75,18 @@ struct RawPeer {
 
 impl RawPeer {
     fn into_peer(self, is_self: bool) -> Peer {
+        let dns_name = self.dns_name.trim_end_matches('.').to_string();
+        let alias = dns_name
+            .split('.')
+            .next()
+            .filter(|label| !label.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.host_name.clone());
         Peer {
             id: self.id,
             hostname: self.host_name,
-            dns_name: self.dns_name.trim_end_matches('.').to_string(),
+            alias,
+            dns_name,
             os: self.os,
             tailscale_ips: self.tailscale_ips,
             online: self.online,
@@ -155,6 +163,41 @@ mod tests {
         assert!(targets[0].offline);
         assert_eq!(targets[2].name, "pekarnya");
         assert!(!targets[2].offline);
+    }
+
+    #[test]
+    fn alias_prefers_first_dns_label_over_hostname() {
+        let peer = RawPeer {
+            id: "1".into(),
+            host_name: "DESKTOP-ABC123".into(),
+            dns_name: "renamed-machine.tailnet-name.ts.net.".into(),
+            os: "linux".into(),
+            tailscale_ips: vec![],
+            online: true,
+            last_seen: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
+        }
+        .into_peer(false);
+        assert_eq!(peer.alias, "renamed-machine");
+        assert_eq!(peer.hostname, "DESKTOP-ABC123");
+    }
+
+    #[test]
+    fn alias_falls_back_to_hostname_when_dns_name_missing() {
+        let peer = RawPeer {
+            id: "1".into(),
+            host_name: "DESKTOP-ABC123".into(),
+            dns_name: "".into(),
+            os: "linux".into(),
+            tailscale_ips: vec![],
+            online: true,
+            last_seen: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
+        }
+        .into_peer(false);
+        assert_eq!(peer.alias, "DESKTOP-ABC123");
     }
 
     #[test]

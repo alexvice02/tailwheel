@@ -33,6 +33,7 @@ pub fn run() {
             commands::update_settings,
             commands::get_device_stats,
             commands::get_cp_targets,
+            commands::expand_send_paths,
             commands::send_file,
             commands::list_history,
             commands::list_pending,

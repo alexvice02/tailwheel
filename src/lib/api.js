@@ -5,6 +5,7 @@ export const api = {
   updateSettings: (settings) => invoke("update_settings", { settings }),
   getDeviceStats: () => invoke("get_device_stats"),
   getCpTargets: () => invoke("get_cp_targets"),
+  expandSendPaths: (paths) => invoke("expand_send_paths", { paths }),
   sendFile: (target, path) => invoke("send_file", { target, path }),
   listHistory: () => invoke("list_history"),
   listPending: () => invoke("list_pending"),
