@@ -127,6 +127,10 @@ impl Store {
         Self::write_json(&self.history_path(), &state)
     }
 
+    pub fn clear_history(&self) -> Result<()> {
+        Self::write_json(&self.history_path(), &HistoryState::default())
+    }
+
     // --- pending incoming ---------------------------------------------------
 
     fn load_pending_state(&self) -> Result<PendingState> {
@@ -560,6 +564,21 @@ mod tests {
         store.prune_history(HistoryRetention::Never, now).unwrap();
 
         assert_eq!(store.list_history().unwrap().len(), 1);
+        cleanup(root);
+    }
+
+    #[test]
+    fn clear_history_empties_the_log() {
+        let (store, root) = test_store();
+        let now = chrono::Utc::now();
+
+        store.append_history(fake_record("one", now.to_rfc3339())).unwrap();
+        store.append_history(fake_record("two", now.to_rfc3339())).unwrap();
+        assert_eq!(store.list_history().unwrap().len(), 2);
+
+        store.clear_history().unwrap();
+
+        assert!(store.list_history().unwrap().is_empty());
         cleanup(root);
     }
 

@@ -1,6 +1,12 @@
 <template>
     <section>
-        <h1>Transfer history</h1>
+        <div class="section-header">
+            <h1>Transfer history</h1>
+            <button class="ghost" v-if="history.length > 0" :disabled="clearing" @click="clearHistory">
+                <Trash2 :size="14"/>
+                {{ clearing ? "Clearing..." : "Clear history" }}
+            </button>
+        </div>
         <p v-if="history.length === 0" class="empty">No transfers yet.</p>
         <table v-else class="history-table">
             <thead>
@@ -72,6 +78,7 @@
 <script setup>
 import {ref, computed, onMounted, onUnmounted} from "vue";
 import {listen} from "@tauri-apps/api/event";
+import {confirm} from "@tauri-apps/plugin-dialog";
 import {
     ArrowUpRight,
     ArrowDownLeft,
@@ -81,6 +88,7 @@ import {
     Folder,
     ChevronRight,
     FileText,
+    Trash2,
 } from "@lucide/vue";
 import {api} from "../lib/api";
 import {formatSize, formatDate} from "../lib/format";
@@ -88,6 +96,7 @@ import {groupConsecutive} from "../lib/group";
 
 const history = ref([]);
 const expandedBatches = ref(new Set());
+const clearing = ref(false);
 const unlisteners = [];
 
 const statusIcon = {
@@ -135,6 +144,22 @@ function toggleBatch(id) {
 
 async function refresh() {
     history.value = await api.listHistory();
+}
+
+async function clearHistory() {
+    const ok = await confirm(
+        "This permanently deletes all transfer history. This cannot be undone.",
+        {title: "Clear history", kind: "warning"},
+    );
+    if (!ok) return;
+
+    clearing.value = true;
+    try {
+        await api.clearHistory();
+        await refresh();
+    } finally {
+        clearing.value = false;
+    }
 }
 
 onMounted(async () => {

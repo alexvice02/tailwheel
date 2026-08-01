@@ -15,6 +15,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let store = Arc::new(Store::new(None).expect("failed to initialize local store"));
+            let settings = store.load_settings().unwrap_or_default();
+            commands::apply_window_decorations(app.handle(), settings.hide_titlebar);
             tray::setup(app.handle())?;
             poller::spawn(app.handle().clone(), store.clone());
             app.manage(AppState { store });
@@ -36,6 +38,7 @@ pub fn run() {
             commands::expand_send_paths,
             commands::send_file,
             commands::list_history,
+            commands::clear_history,
             commands::list_pending,
             commands::poll_now,
             commands::accept_pending,

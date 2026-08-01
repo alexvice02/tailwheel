@@ -163,6 +163,13 @@ pub struct Settings {
     pub poll_interval_secs: u64,
     #[serde(default)]
     pub history_retention: HistoryRetention,
+    /// Experimental: ask the window manager for a chromeless window (no
+    /// native title bar). Meant for tiling/Wayland setups (e.g. Hyprland)
+    /// that don't draw one anyway; on stacking WMs this also removes the
+    /// system close/minimize/maximize controls, so it's opt-in rather than
+    /// autodetected.
+    #[serde(default)]
+    pub hide_titlebar: bool,
 }
 
 impl Default for Settings {
@@ -177,6 +184,7 @@ impl Default for Settings {
             conflict_policy: ConflictPolicy::Rename,
             poll_interval_secs: 3,
             history_retention: HistoryRetention::default(),
+            hide_titlebar: false,
         }
     }
 }

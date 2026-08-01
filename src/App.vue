@@ -1,3 +1,65 @@
+<template>
+    <div class="app-shell" :class="{ resizing }">
+        <nav
+            class="sidebar"
+            :class="{ collapsed: sidebarCollapsed, resizing }"
+            :style="{ width: sidebarCollapsed ? '0px' : sidebarWidth + 'px' }"
+        >
+            <div class="sidebar-inner">
+                <div class="brand">
+                    <span class="brand-mark"><Plane :size="18"/></span>
+                    <span class="brand-name">tailwheel</span>
+                    <button class="icon-btn collapse-btn" title="Hide sidebar" @click="toggleSidebar">
+                        <PanelLeftClose :size="16"/>
+                    </button>
+                </div>
+
+                <ul class="nav-list">
+                    <li class="nav-list__item" v-for="parent in navItems">
+                        <button
+                            :class="{ 'nav-item': true, 'nav-item--expanded': isExpanded(parent.id) || !parent?.items?.length }"
+                            @click.prevent="parent?.items?.length ? toggleExpanded(parent.id) : current = parent?.path"
+                        >
+                            <component :is="FolderCode" :size="17" class="nav-item__icon"></component>
+                            {{ parent?.label }}
+                            <component :is="ChevronDown" :size="17" class="nav-item__toggle" v-if="parent?.items?.length"></component>
+                        </button>
+
+                        <div class="collapse" :class="{ 'collapse--expanded': isExpanded(parent.id) }" v-if="parent?.items?.length">
+                            <ul class="sub-nav-list collapse__inner">
+                                <li class="sub-nav-list__item" v-for="subItem in parent?.items">
+                                    <button :class="{ 'nav-item': true, 'nav-item--active': subItem.path === current }" @click="current = subItem.path">
+                                        <component :is="subItem?.icon" :size="17" class="nav-item__icon" v-if="subItem?.icon"></component>
+                                        {{ subItem?.label }}
+                                        <component :is="ChevronDown" :size="17" class="nav-item__toggle" v-if="subItem?.items?.length"></component>
+                                        <Transition name="pop">
+                                            <span v-if="subItem.path === '/inbox' && pendingCount > 0" :key="pendingCount" class="badge">
+                                                {{ pendingCount }}
+                                            </span>
+                                        </Transition>
+                                    </button>
+                                </li>
+                            </ul>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+            <div v-if="!sidebarCollapsed" class="sidebar-resizer" @pointerdown="startResize"></div>
+        </nav>
+
+        <main class="content">
+            <Transition name="rail">
+                <button v-if="sidebarCollapsed" class="rail-toggle" title="Show sidebar" @click="toggleSidebar">
+                    <PanelLeft :size="16"/>
+                </button>
+            </Transition>
+            <Transition name="view" mode="out-in">
+                <component :is="currentComponent" :key="current" @pending-changed="refreshPendingCount"/>
+            </Transition>
+        </main>
+    </div>
+</template>
+
 <script setup>
 import {ref, computed, onMounted, onUnmounted, watch} from "vue";
 import {listen} from "@tauri-apps/api/event";
@@ -10,6 +72,9 @@ import {
     Plane,
     PanelLeftClose,
     PanelLeft,
+    ChevronDown,
+    FolderCode,
+    Dot
 } from "@lucide/vue";
 import SendView from "./components/SendView.vue";
 import InboxView from "./components/InboxView.vue";
@@ -19,23 +84,27 @@ import SettingsView from "./components/SettingsView.vue";
 import {api} from "./lib/api";
 
 const navItems = [
-    {path: "/send", label: "Send", component: SendView, icon: SendIcon},
-    {path: "/inbox", label: "Inbox", component: InboxView, icon: InboxIcon},
-    {path: "/history", label: "History", component: HistoryView, icon: HistoryIcon},
-    {path: "/devices", label: "Devices", component: DevicesView, icon: Laptop},
-    {path: "/settings", label: "Settings", component: SettingsView, icon: SettingsIcon},
+    {id: 1, label: "Taildrop", icon: FolderCode, items: [
+            {id: 2, path: "/send", label: "Send", component: SendView, icon: SendIcon},
+            {id: 3, path: "/inbox", label: "Inbox", component: InboxView, icon: InboxIcon},
+            {id: 4, path: "/history", label: "History", component: HistoryView, icon: HistoryIcon},
+            {id: 5, path: "/devices", label: "Devices", component: DevicesView, icon: Laptop},
+        ]},
+    {id: 6, path: "/settings", label: "Settings", component: SettingsView, icon: SettingsIcon}
 ];
+const expandedIds = ref(new Set([1]));
 const aliases = {"/": "/send"};
 
 const current = ref("/send");
 const pendingCount = ref(0);
 const unlisteners = [];
 
-const currentComponent = computed(
-    () => navItems.find((n) => n.path === current.value)?.component ?? SendView,
+const currentComponent = computed(() =>
+    navItems
+        .flatMap((item) => item.items ?? [item])
+        .find((item) => item.path === current.value)?.component ?? SendView
 );
 
-// --- sidebar: resizable + collapsible (Obsidian-style) ---------------------
 const WIDTH_KEY = "tailwheel:sidebar-width";
 const COLLAPSED_KEY = "tailwheel:sidebar-collapsed";
 const MIN_WIDTH = 200;
@@ -47,6 +116,17 @@ const resizing = ref(false);
 
 watch(sidebarWidth, (w) => localStorage.setItem(WIDTH_KEY, String(w)));
 watch(sidebarCollapsed, (c) => localStorage.setItem(COLLAPSED_KEY, c ? "1" : "0"));
+
+function isExpanded(id) {
+    return expandedIds.value.has(id);
+}
+
+function toggleExpanded(id) {
+    const next = new Set(expandedIds.value);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    expandedIds.value = next;
+}
 
 function toggleSidebar() {
     sidebarCollapsed.value = !sidebarCollapsed.value;
@@ -95,54 +175,7 @@ onMounted(async () => {
 onUnmounted(() => unlisteners.forEach((u) => u()));
 </script>
 
-<template>
-    <div class="app-shell" :class="{ resizing }">
-        <nav
-            class="sidebar"
-            :class="{ collapsed: sidebarCollapsed, resizing }"
-            :style="{ width: sidebarCollapsed ? '0px' : sidebarWidth + 'px' }"
-        >
-            <div class="sidebar-inner">
-                <div class="brand">
-                    <span class="brand-mark"><Plane :size="18"/></span>
-                    <span class="brand-name">tailwheel</span>
-                    <button class="icon-btn collapse-btn" title="Hide sidebar" @click="toggleSidebar">
-                        <PanelLeftClose :size="16"/>
-                    </button>
-                </div>
-                <button
-                    v-for="item in navItems"
-                    :key="item.path"
-                    class="nav-item"
-                    :class="{ active: current === item.path }"
-                    @click="current = item.path"
-                >
-                    <component :is="item.icon" :size="17" class="nav-icon"/>
-                    <span class="nav-label">{{ item.label }}</span>
-                    <Transition name="pop">
-            <span v-if="item.path === '/inbox' && pendingCount > 0" :key="pendingCount" class="badge">{{
-                    pendingCount
-                }}</span>
-                    </Transition>
-                </button>
-            </div>
-            <div v-if="!sidebarCollapsed" class="sidebar-resizer" @pointerdown="startResize"></div>
-        </nav>
-
-        <main class="content">
-            <Transition name="rail">
-                <button v-if="sidebarCollapsed" class="rail-toggle" title="Show sidebar" @click="toggleSidebar">
-                    <PanelLeft :size="16"/>
-                </button>
-            </Transition>
-            <Transition name="view" mode="out-in">
-                <component :is="currentComponent" :key="current" @pending-changed="refreshPendingCount"/>
-            </Transition>
-        </main>
-    </div>
-</template>
-
-<style>
+<style lang="scss">
 :root {
     color-scheme: light dark;
     --bg: #f3f4f8;
@@ -318,9 +351,40 @@ body {
     color: var(--text);
 }
 
+.nav-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+
+    & & {
+        padding-left: 16px;
+    }
+}
+
+.collapse {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+
+    &--expanded {
+        grid-template-rows: 1fr;
+    }
+
+    &__inner {
+        overflow: hidden;
+        min-height: 0;
+    }
+}
+
+.sub-nav-list {
+    padding-left: 16px;
+    list-style: none;
+}
+
 .nav-item {
     display: flex;
     align-items: center;
+    width: 100%;
     gap: 10px;
     text-align: left;
     padding: 9px 10px;
@@ -333,33 +397,49 @@ body {
     font-size: 14px;
     white-space: nowrap;
     transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
-}
 
-.nav-icon {
-    flex-shrink: 0;
-    color: var(--muted);
-    transition: color 0.15s ease;
-}
+    &__label {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
 
-.nav-label {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
+    &__icon {
+        flex-shrink: 0;
+        color: var(--muted);
+        transition: color 0.15s ease;
+    }
 
-.nav-item:hover {
-    background: var(--border);
-    transform: translateX(1px);
-}
+    &__toggle {
+        flex-shrink: 0;
+        margin-left: auto;
+        color: var(--muted);
+        transition: color 0.15s ease, transform 0.15s ease;
+        transform: rotate(-90deg);
+    }
 
-.nav-item.active {
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    color: var(--accent-text);
-    box-shadow: var(--shadow-sm);
-}
+    &:not(&--active):hover {
+        background: var(--border);
+        transform: translateX(1px);
+    }
 
-.nav-item.active .nav-icon {
-    color: var(--accent-text);
+    &--active {
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: var(--accent-text);
+        box-shadow: var(--shadow-sm);
+    }
+
+    &--active &__icon {
+        color: var(--accent-text);
+    }
+
+    &--expanded &__toggle, &--expanded &__icon {
+        color: var(--text);
+    }
+
+    &--expanded &__toggle {
+        transform: none;
+    }
 }
 
 .badge {
@@ -428,25 +508,37 @@ h1 {
 
 .field {
     display: block;
-    margin-bottom: 16px;
+    margin-bottom: 32px;
+    position: relative;
+
+    & > span {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--text);
+        font-size: 15px;
+    }
+
+    &.checkbox {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+
+        & > span {
+            margin: 0;
+            color: var(--text);
+        }
+    }
 }
 
-.field > span {
-    display: block;
-    margin-bottom: 6px;
-    color: var(--muted);
-    font-size: 13px;
-}
-
-.field.checkbox {
+.field-group {
     display: flex;
-    align-items: center;
-    gap: 8px;
-}
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 32px;
 
-.field.checkbox > span {
-    margin: 0;
-    color: var(--text);
+    & > .field {
+        margin: 0;
+    }
 }
 
 .path-row {
@@ -462,7 +554,7 @@ select {
     padding: 8px 10px;
     border-radius: 8px;
     border: 1px solid var(--border);
-    background: var(--panel);
+    background: #fff;
     color: var(--text);
     font-size: 14px;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -474,6 +566,23 @@ select:focus {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+select {
+    background: var(--panel);
+    appearance: none;
+    -webkit-appearance: none;
+
+    & + svg {
+        position: absolute;
+        bottom: 10px;
+        right: 10px;
+        transition: transform 0.15s ease;
+    }
+
+    &:active + svg {
+        transform: rotate(180deg) translateY(1px);
+    }
 }
 
 button {

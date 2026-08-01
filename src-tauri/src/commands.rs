@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use taildrop_core::error::TaildropError;
 use taildrop_core::models::{CpTarget, DeviceStats, PendingIncoming, Settings, TransferRecord};
@@ -20,9 +20,18 @@ pub fn get_settings(state: State<AppState>) -> Result<Settings, String> {
     to_str_err(state.store.load_settings())
 }
 
+/// Experimental: request a chromeless window. Best-effort — a window manager
+/// that ignores the request (most stacking WMs) just keeps its own title bar.
+pub fn apply_window_decorations(app: &AppHandle, hide_titlebar: bool) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_decorations(!hide_titlebar);
+    }
+}
+
 #[tauri::command]
-pub fn update_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
+pub fn update_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<(), String> {
     to_str_err(state.store.save_settings(&settings))?;
+    apply_window_decorations(&app, settings.hide_titlebar);
 
     to_str_err(
         state
@@ -75,6 +84,11 @@ pub fn send_file(
 #[tauri::command]
 pub fn list_history(state: State<AppState>) -> Result<Vec<TransferRecord>, String> {
     to_str_err(state.store.list_history())
+}
+
+#[tauri::command]
+pub fn clear_history(state: State<AppState>) -> Result<(), String> {
+    to_str_err(state.store.clear_history())
 }
 
 #[tauri::command]

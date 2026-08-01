@@ -8,6 +8,7 @@ export const api = {
   expandSendPaths: (paths) => invoke("expand_send_paths", { paths }),
   sendFile: (target, path, batchId) => invoke("send_file", { target, path, batchId }),
   listHistory: () => invoke("list_history"),
+  clearHistory: () => invoke("clear_history"),
   listPending: () => invoke("list_pending"),
   pollNow: () => invoke("poll_now"),
   acceptPending: (id) => invoke("accept_pending", { id }),
