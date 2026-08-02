@@ -39,6 +39,9 @@ jobs:
       
       - name: tauri-action
         uses: tauri-apps/tauri-action@action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           releaseId:
           tagName: tailwheel-v__VERSION__
