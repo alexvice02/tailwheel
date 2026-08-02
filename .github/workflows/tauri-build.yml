@@ -8,6 +8,8 @@ jobs:
   release:
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v4
+      
       - name: tauri-action
         uses: tauri-apps/tauri-action@action-v1.0.0
         with:
