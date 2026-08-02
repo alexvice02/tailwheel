@@ -1,0 +1,36 @@
+name: Release
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: tauri-action
+        uses: tauri-apps/tauri-action@action-v1.0.0
+        with:
+          releaseId:
+          tagName: tailwheel-v__VERSION__
+          releaseName: 'tailwheel v__VERSION__'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: true
+          prerelease: false
+          releaseCommitish:
+          projectPath: .
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: false
+          tauriScript:
+          args:
+          retryAttempts: 2
+          owner: alexvice02
+          repo:
+          githubBaseUrl:
+          releaseAssetNamePattern:
+          uploadPlainBinary: false
+          uploadWorkflowArtifacts: false
+          workflowArtifactNamePattern:
+          uploadUpdaterSignatures: true
+          generateReleaseNotes: false
+          mobile:
