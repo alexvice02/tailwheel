@@ -10,7 +10,7 @@
                         {{ t.name }}{{ t.offline ? " (offline)" : "" }}
                     </option>
                 </select>
-                <button class="ghost" @click="loadTargets" title="Refresh device list">
+                <button class="ghost" @click="loadTargets(true)" title="Refresh device list">
                     <RefreshCw :size="15"/>
                 </button>
             </div>
@@ -136,10 +136,10 @@ function addFiles(paths) {
     }
 }
 
-async function loadTargets() {
+async function loadTargets(fresh = false) {
     loadError.value = "";
     try {
-        targets.value = await api.getCpTargets();
+        targets.value = await api.getCpTargets(fresh);
         if (pendingSendTarget.value && targets.value.some((t) => t.name === pendingSendTarget.value)) {
             selectedTarget.value = pendingSendTarget.value;
         }

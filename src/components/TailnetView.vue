@@ -10,7 +10,7 @@
                 <button class="ghost icon-only" title="Reset view" @click="resetView">
                     <Maximize :size="15"/>
                 </button>
-                <button class="ghost icon-only" title="Refresh" :disabled="loading" @click="loadGraph">
+                <button class="ghost icon-only" title="Refresh" :disabled="loading" @click="loadGraph(true)">
                     <RefreshCw :size="15" :class="{ spinning: loading }"/>
                 </button>
             </div>
@@ -600,7 +600,9 @@ async function sendFilesToNode(node, paths) {
 
 async function refreshStatsOnly() {
     try {
-        const stats = await api.getDeviceStats();
+        // Fresh: this runs right after a send, to pick up the byte counters
+        // that send just moved.
+        const stats = await api.getDeviceStats(true);
         for (const d of stats.devices) {
             const n = nodes.find((x) => x.id === d.peer.id);
             if (n) {
@@ -676,11 +678,14 @@ function buildNodes(devices) {
     draw();
 }
 
-async function loadGraph() {
+async function loadGraph(fresh = false) {
     loading.value = true;
     loadError.value = "";
     try {
-        const [stats, targets] = await Promise.all([api.getDeviceStats(), api.getCpTargets()]);
+        const [stats, targets] = await Promise.all([
+            api.getDeviceStats(fresh),
+            api.getCpTargets(fresh),
+        ]);
         cpTargets = targets;
         buildNodes(stats.devices);
     } catch (e) {

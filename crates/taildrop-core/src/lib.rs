@@ -93,10 +93,25 @@ pub fn poll_inbox_once(store: &Store, conflict: ConflictPolicy) -> Result<Vec<Pe
     store.ingest_drained_files(drained)
 }
 
+/// The no-subprocess counterpart to `poll_inbox_once`, for when a long-lived
+/// `tailscale file get --loop` receiver (see `tailscale::spawn_receiver`) is
+/// already draining the inbox into staging: this just picks up whatever
+/// landed there since last time. A directory listing costs microseconds, so
+/// unlike the drain-based poll it can run on a short timer without the app
+/// spawning a process every few seconds all day.
+pub fn poll_staging_once(store: &Store) -> Result<Vec<PendingIncoming>> {
+    let new_files = store.unclaimed_staging_files()?;
+    if new_files.is_empty() {
+        return Ok(Vec::new());
+    }
+    store.ingest_drained_files(new_files)
+}
+
 /// Tailnet device list enriched with this app's own send/receive counts per
-/// peer, for the device/network statistics view.
-pub fn device_stats(store: &Store) -> Result<DeviceStats> {
-    let status = tailscale::status()?;
+/// peer, for the device/network statistics view. `fresh` bypasses
+/// `tailscale::status`'s cache; pass it only for user-initiated refreshes.
+pub fn device_stats(store: &Store, fresh: bool) -> Result<DeviceStats> {
+    let status = tailscale::status(fresh)?;
     let history = store.list_history()?;
 
     let mut per_peer: std::collections::HashMap<String, (u64, u64, u64, u64)> =
@@ -192,6 +207,71 @@ mod tests {
         assert!(result.contains(&nested.join("b.txt")));
 
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    /// The receive path the GUI actually runs: a long-lived child dropping
+    /// files into staging on its own schedule, and a poll that notices them
+    /// without shelling out. Uses a stand-in for `tailscale` because Taildrop
+    /// refuses to send to the machine it's running on, so there's no way to
+    /// exercise a real `file get --loop` on a single host.
+    ///
+    /// Windows batch files aren't shell scripts and this covers our half of
+    /// the mechanism (supervision + ingest), not the CLI's, so Unix is enough.
+    #[test]
+    #[cfg(unix)]
+    fn receiver_child_drops_files_into_staging_and_the_poll_ingests_them() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("tailwheel-receiver-{}", uuid::Uuid::new_v4()));
+        let store = Store::new(Some(root.clone())).unwrap();
+
+        // Stands in for `tailscale file get --loop <dir>`: drops a file into
+        // the destination, then keeps running the way the real one does.
+        let fake = root.join("fake-tailscale.sh");
+        {
+            let mut f = std::fs::File::create(&fake).unwrap();
+            writeln!(f, "#!/bin/sh\nsleep 0.2\necho payload > \"$5/from-peer.bin\"\nsleep 30\n").unwrap();
+        }
+        let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake, perms).unwrap();
+
+        let mut child =
+            tailscale::spawn_receiver_bin(&fake, &store.staging_dir(), ConflictPolicy::Rename)
+                .unwrap();
+
+        let staged = store.staging_dir().join("from-peer.bin");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !staged.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(staged.exists(), "receiver child never wrote the file");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "receiver child should still be running, not exit after one file"
+        );
+
+        // Backdate past the settle window instead of sleeping through it.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&staged)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        let ingested = poll_staging_once(&store).unwrap();
+        assert_eq!(ingested.len(), 1);
+        assert_eq!(ingested[0].file_name, "from-peer.bin");
+        assert!(
+            poll_staging_once(&store).unwrap().is_empty(),
+            "a second poll must not re-ingest the same file"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
