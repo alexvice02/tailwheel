@@ -70,6 +70,12 @@ impl Store {
         self.root.join("staging")
     }
 
+    /// The app-data directory itself, for callers that need to put something
+    /// alongside the store's own files (the GUI's timing log).
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn settings_path(&self) -> PathBuf {
         self.root.join("settings.json")
     }
@@ -145,6 +151,57 @@ impl Store {
         Ok(self.load_pending_state()?.items)
     }
 
+    /// Files sitting in staging that no pending entry accounts for yet.
+    ///
+    /// This is the counterpart to `tailscale::spawn_receiver`: when a
+    /// long-lived `file get --loop` is dropping files into staging on its own
+    /// schedule, there is no drain call whose before/after diff would tell us
+    /// what is new, so the directory itself becomes the source of truth and
+    /// `pending.json` its index.
+    ///
+    /// Files touched within the last couple of seconds are skipped. Taildrop
+    /// only releases a file once it has fully arrived, but moving it out of
+    /// tailscaled's inbox is a plain copy when the two live on different
+    /// volumes — and a copy caught halfway would otherwise be ingested at a
+    /// truncated size. Anything still growing simply gets picked up a tick
+    /// later, once its mtime settles.
+    pub fn unclaimed_staging_files(&self) -> Result<Vec<PathBuf>> {
+        const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+        let claimed: std::collections::HashSet<PathBuf> = self
+            .list_pending()?
+            .iter()
+            .map(|i| PathBuf::from(&i.staged_path))
+            .collect();
+
+        let entries = match fs::read_dir(self.staging_dir()) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(TaildropError::Io(e.to_string())),
+        };
+
+        let mut out = Vec::new();
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if claimed.contains(&path) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            let settled = meta
+                .modified()
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .is_none_or(|age| age >= SETTLE);
+            if settled {
+                out.push(path);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn is_sidecar_file(path: &Path) -> bool {
         path.file_name()
             .and_then(|n| n.to_str())
@@ -163,6 +220,15 @@ impl Store {
     pub fn ingest_drained_files(&self, new_paths: Vec<PathBuf>) -> Result<Vec<PendingIncoming>> {
         let mut state = self.load_pending_state()?;
         let mut real_files = Vec::new();
+        // Guards against handing the same staged file two pending entries.
+        // Callers can legitimately overlap: the GUI's long-lived receiver
+        // drops a file into staging, and a `taildrop confirm-drop` running in
+        // a terminal sees it appear during its own drain and offers it up too.
+        let claimed: std::collections::HashSet<PathBuf> = state
+            .items
+            .iter()
+            .map(|i| PathBuf::from(&i.staged_path))
+            .collect();
 
         for path in new_paths {
             if Self::is_sidecar_file(&path) {
@@ -172,7 +238,7 @@ impl Store {
                     }
                 }
                 let _ = fs::remove_file(&path);
-            } else {
+            } else if !claimed.contains(&path) {
                 real_files.push(path);
             }
         }
@@ -375,6 +441,54 @@ mod tests {
 
     fn cleanup(root: PathBuf) {
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// Backdated so `unclaimed_staging_files`' settle window (which exists to
+    /// avoid ingesting a file mid-copy) doesn't hide it from the test.
+    fn write_settled_staged_file(store: &Store, name: &str, contents: &[u8]) -> PathBuf {
+        let path = store.staging_dir().join(name);
+        fs::write(&path, contents).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let old = fs::FileTimes::new().set_modified(old);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(old)
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn unclaimed_staging_files_skips_already_pending_and_unsettled_files() {
+        let (store, root) = test_store();
+        let known = write_settled_staged_file(&store, "known.bin", b"a");
+        let fresh = write_settled_staged_file(&store, "fresh.bin", b"b");
+        // Just written, so still inside the settle window.
+        fs::write(store.staging_dir().join("mid-copy.bin"), b"c").unwrap();
+
+        store.ingest_drained_files(vec![known.clone()]).unwrap();
+
+        let unclaimed = store.unclaimed_staging_files().unwrap();
+        assert_eq!(unclaimed, vec![fresh], "only the settled, unclaimed file");
+        cleanup(root);
+    }
+
+    /// The GUI's `file get --loop` receiver and a `taildrop confirm-drop`
+    /// running in a terminal can both spot the same staged file; it must not
+    /// end up in the pending queue twice.
+    #[test]
+    fn ingesting_the_same_staged_file_twice_adds_one_pending_entry() {
+        let (store, root) = test_store();
+        let path = write_settled_staged_file(&store, "photo.jpg", b"jpeg");
+
+        let first = store.ingest_drained_files(vec![path.clone()]).unwrap();
+        let second = store.ingest_drained_files(vec![path]).unwrap();
+
+        assert_eq!(first.len(), 1);
+        assert!(second.is_empty(), "second ingest must be a no-op");
+        assert_eq!(store.list_pending().unwrap().len(), 1);
+        cleanup(root);
     }
 
     #[test]
