@@ -63,7 +63,7 @@ fn run() -> Result<()> {
 }
 
 fn cmd_send(store: &Store, target: &str, files: &[PathBuf]) -> Result<()> {
-    let status = tailscale::status()?;
+    let status = tailscale::status(true)?;
 
     let batch_id = uuid::Uuid::new_v4().to_string();
     let mut any_failed = false;
@@ -167,7 +167,7 @@ fn resolve_pending_id(store: &Store, prefix: &str) -> Result<String> {
 }
 
 fn cmd_status(store: &Store) -> Result<()> {
-    let stats = device_stats(store)?;
+    let stats = device_stats(store, true)?;
     println!(
         "{:<20} {:<9} {:<8} {:<10} {:>12} {:>12}",
         "DEVICE", "OS", "STATUS", "IP", "SENT", "RECEIVED"

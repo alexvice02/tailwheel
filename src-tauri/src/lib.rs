@@ -18,6 +18,10 @@ pub fn run() {
             let settings = store.load_settings().unwrap_or_default();
             commands::apply_window_decorations(app.handle(), settings.hide_titlebar);
             tray::setup(app.handle())?;
+            // Ask tailscaled for the peer list now, on a thread of its own, so
+            // those round trips overlap with the webview booting instead of
+            // starting only once the tailnet view has mounted and asked.
+            std::thread::spawn(taildrop_core::tailscale::warm_caches);
             poller::spawn(app.handle().clone(), store.clone());
             app.manage(AppState { store });
             Ok(())
