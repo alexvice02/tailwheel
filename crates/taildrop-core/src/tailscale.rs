@@ -12,7 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
 fn binary() -> PathBuf {
@@ -36,9 +37,37 @@ fn binary() -> PathBuf {
     PathBuf::from("tailscale")
 }
 
+/// Windows `CREATE_NO_WINDOW`. Not re-exported by std, so it's spelled out
+/// here rather than pulling in `windows-sys` for a single constant.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Build a `Command` for the tailscale CLI.
+///
+/// `tailscale.exe` is a console binary, so on Windows every plain
+/// `Command::new` allocates a console and flashes a black `cmd`-looking
+/// window for the lifetime of the child. With the inbox poller shelling out
+/// every few seconds that's a window popping over whatever the user is doing,
+/// several times a minute — it looks like malware even though nothing is
+/// wrong. `CREATE_NO_WINDOW` suppresses it; stdout/stderr are captured by the
+/// callers regardless, so nothing is lost. No-op on other platforms.
+#[cfg(windows)]
+fn command(bin: &Path) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = Command::new(bin);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn command(bin: &Path) -> Command {
+    Command::new(bin)
+}
+
 fn run(args: &[&str]) -> Result<String> {
-    let output = Command::new(binary())
+    let output = command(&binary())
         .args(args)
+        .stdin(Stdio::null())
         .output()
         .map_err(TaildropError::Spawn)?;
     if !output.status.success() {
@@ -68,8 +97,9 @@ fn run_with_timeout(args: &[&str], timeout: Duration) -> Result<String> {
 /// mutating the process-wide `TAILSCALE_BIN` env var, which would race
 /// across tests running in parallel).
 fn run_bin_with_timeout(bin: &Path, args: &[&str], timeout: Duration) -> Result<String> {
-    let mut child = Command::new(bin)
+    let mut child = command(bin)
         .args(args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -109,6 +139,62 @@ fn run_bin_with_timeout(bin: &Path, args: &[&str], timeout: Duration) -> Result<
         }));
     }
     Ok(stdout)
+}
+
+// --- query cache ------------------------------------------------------------
+
+/// How long a cached `status` / `file cp --targets` answer stays servable.
+///
+/// Every one of those calls costs a process spawn plus a round trip to
+/// tailscaled — on Windows that is a few hundred milliseconds before the CLI
+/// has even parsed its arguments (more with an antivirus inspecting each
+/// spawn). The GUI asks for the same answer from several places: the tailnet
+/// graph wants both, the device list and the send picker want one each, every
+/// tab switch remounts a view, and a batch send used to re-ask for `status`
+/// once per file. A device list a few seconds stale is invisible to the user;
+/// the repeated spawns are not. Explicit refresh actions bypass this.
+const CACHE_TTL: Duration = Duration::from_secs(10);
+
+struct Cached<T> {
+    value: T,
+    fetched_at: Instant,
+}
+
+static STATUS_CACHE: Mutex<Option<Cached<TailnetStatus>>> = Mutex::new(None);
+static TARGETS_CACHE: Mutex<Option<Cached<Vec<CpTarget>>>> = Mutex::new(None);
+
+/// Serve `slot` if it's younger than [`CACHE_TTL`], otherwise call `fetch` and
+/// store the result. The lock is deliberately *not* held across `fetch`: a
+/// wedged `tailscale` subprocess would otherwise block every other caller too,
+/// and the worst case without it is one redundant spawn when two threads miss
+/// at the same moment.
+fn cached<T: Clone>(
+    slot: &Mutex<Option<Cached<T>>>,
+    fresh: bool,
+    fetch: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    if !fresh {
+        let guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = guard.as_ref() {
+            if entry.fetched_at.elapsed() < CACHE_TTL {
+                return Ok(entry.value.clone());
+            }
+        }
+    }
+    let value = fetch()?;
+    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Cached {
+        value: value.clone(),
+        fetched_at: Instant::now(),
+    });
+    Ok(value)
+}
+
+/// Populate the caches ahead of the first UI request. The GUI calls this on a
+/// background thread at startup so the `tailscale` round trips overlap with
+/// the webview booting instead of running after it.
+pub fn warm_caches() {
+    let _ = status(false);
+    let _ = cp_targets(false);
 }
 
 // --- status / peers -------------------------------------------------------
@@ -169,24 +255,29 @@ struct RawStatus {
 }
 
 /// Full tailnet status: self + all known peers, online or not. Backs the
-/// device/network statistics view.
-pub fn status() -> Result<TailnetStatus> {
-    let out = run(&["status", "--json"])?;
-    let raw: RawStatus = serde_json::from_str(&out)?;
-    let mut peers: Vec<Peer> = raw.peer.into_values().map(|p| p.into_peer(false)).collect();
-    peers.sort_by(|a, b| a.hostname.to_lowercase().cmp(&b.hostname.to_lowercase()));
-    Ok(TailnetStatus {
-        self_peer: raw.self_peer.into_peer(true),
-        peers,
+/// device/network statistics view. Answers from the [`CACHE_TTL`] cache unless
+/// `fresh` is set, which user-initiated refreshes do.
+pub fn status(fresh: bool) -> Result<TailnetStatus> {
+    cached(&STATUS_CACHE, fresh, || {
+        let out = run(&["status", "--json"])?;
+        let raw: RawStatus = serde_json::from_str(&out)?;
+        let mut peers: Vec<Peer> = raw.peer.into_values().map(|p| p.into_peer(false)).collect();
+        peers.sort_by(|a, b| a.hostname.to_lowercase().cmp(&b.hostname.to_lowercase()));
+        Ok(TailnetStatus {
+            self_peer: raw.self_peer.into_peer(true),
+            peers,
+        })
     })
 }
 
 /// Valid `file cp` targets right now, as tailscaled itself sees them. Prefer
 /// this over filtering `status()` for the send picker: it reflects ACLs and
-/// file-sharing eligibility, not just online-ness.
-pub fn cp_targets() -> Result<Vec<CpTarget>> {
-    let out = run(&["file", "cp", "--targets"])?;
-    Ok(parse_cp_targets(&out))
+/// file-sharing eligibility, not just online-ness. Cached like `status`.
+pub fn cp_targets(fresh: bool) -> Result<Vec<CpTarget>> {
+    cached(&TARGETS_CACHE, fresh, || {
+        let out = run(&["file", "cp", "--targets"])?;
+        Ok(parse_cp_targets(&out))
+    })
 }
 
 /// Parses `tailscale file cp --targets` output, e.g.:

@@ -94,9 +94,10 @@ pub fn poll_inbox_once(store: &Store, conflict: ConflictPolicy) -> Result<Vec<Pe
 }
 
 /// Tailnet device list enriched with this app's own send/receive counts per
-/// peer, for the device/network statistics view.
-pub fn device_stats(store: &Store) -> Result<DeviceStats> {
-    let status = tailscale::status()?;
+/// peer, for the device/network statistics view. `fresh` bypasses
+/// `tailscale::status`'s cache; pass it only for user-initiated refreshes.
+pub fn device_stats(store: &Store, fresh: bool) -> Result<DeviceStats> {
+    let status = tailscale::status(fresh)?;
     let history = store.list_history()?;
 
     let mut per_peer: std::collections::HashMap<String, (u64, u64, u64, u64)> =
