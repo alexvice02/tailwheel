@@ -9,8 +9,11 @@
 use crate::error::{Result, TaildropError};
 use crate::models::{ConflictPolicy, CpTarget, Peer, TailnetStatus, WaitingFile};
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 fn binary() -> PathBuf {
     if let Ok(p) = std::env::var("TAILSCALE_BIN") {
@@ -47,6 +50,65 @@ fn run(args: &[&str]) -> Result<String> {
         }));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Like `run`, but kills the child and returns `TaildropError::Timeout`
+/// instead of blocking forever. `tailscale file cp` to a peer that's
+/// offline (or unreachable through NAT/DERP) has no bound on its own — it
+/// just sits there, which from the GUI looks exactly like a hang. Output is
+/// read only after the child exits (or is killed); `tailscale file cp`
+/// never produces more than a line or two, so this can't deadlock on a full
+/// pipe buffer the way it could for a chattier subprocess.
+fn run_with_timeout(args: &[&str], timeout: Duration) -> Result<String> {
+    run_bin_with_timeout(&binary(), args, timeout)
+}
+
+/// Split out from `run_with_timeout` so tests can point it at a fake
+/// long-running binary instead of the real `tailscale` CLI (and without
+/// mutating the process-wide `TAILSCALE_BIN` env var, which would race
+/// across tests running in parallel).
+fn run_bin_with_timeout(bin: &Path, args: &[&str], timeout: Duration) -> Result<String> {
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(TaildropError::Spawn)?;
+
+    let status = match child
+        .wait_timeout(timeout)
+        .map_err(|e| TaildropError::Io(e.to_string()))?
+    {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(TaildropError::Timeout(format!(
+                "`tailscale {}` timed out after {}s — the device may be offline",
+                args.join(" "),
+                timeout.as_secs()
+            )));
+        }
+    };
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut stdout);
+    }
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut stderr);
+    }
+
+    if !status.success() {
+        let stderr = stderr.trim().to_string();
+        return Err(TaildropError::Command(if stderr.is_empty() {
+            format!("`tailscale {}` exited with {}", args.join(" "), status)
+        } else {
+            stderr
+        }));
+    }
+    Ok(stdout)
 }
 
 // --- status / peers -------------------------------------------------------
@@ -205,9 +267,47 @@ mod tests {
         assert!(parse_cp_targets("\n\n").is_empty());
         assert!(parse_cp_targets("").is_empty());
     }
+
+    /// Windows batch scripts aren't shell scripts, and this test only needs
+    /// to prove the kill-on-timeout path works at all — Unix coverage is
+    /// enough for that.
+    #[test]
+    #[cfg(unix)]
+    fn run_with_timeout_kills_a_hung_process() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let script_path =
+            std::env::temp_dir().join(format!("taildrop-sleep-test-{}.sh", uuid::Uuid::new_v4()));
+        {
+            let mut f = std::fs::File::create(&script_path).unwrap();
+            writeln!(f, "#!/bin/sh\nsleep 5\n").unwrap();
+        }
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms).unwrap();
+
+        let start = std::time::Instant::now();
+        let result = run_bin_with_timeout(&script_path, &[], Duration::from_millis(150));
+        let elapsed = start.elapsed();
+
+        let _ = std::fs::remove_file(&script_path);
+
+        assert!(matches!(result, Err(TaildropError::Timeout(_))));
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "should have been killed well before the script's 5s sleep, took {elapsed:?}"
+        );
+    }
 }
 
 // --- sending ----------------------------------------------------------------
+
+/// How long to wait on a single `tailscale file cp` before giving up and
+/// reporting the target unreachable. `tailscale file cp` itself has no
+/// built-in bound when the peer is offline/unreachable — without this the
+/// GUI just sits there indefinitely with no feedback.
+const SEND_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Send `file` to `target` (a hostname, DNS name, or IP from `cp_targets`).
 /// `rename_to` overrides the filename the recipient sees (`--name`), used by
@@ -219,8 +319,8 @@ pub fn send_file(target: &str, file: &Path, rename_to: Option<&str>) -> Result<(
     let target_arg = format!("{}:", target);
     let file_str = file.to_string_lossy().into_owned();
     match rename_to {
-        Some(name) => run(&["file", "cp", "--name", name, &file_str, &target_arg])?,
-        None => run(&["file", "cp", &file_str, &target_arg])?,
+        Some(name) => run_with_timeout(&["file", "cp", "--name", name, &file_str, &target_arg], SEND_TIMEOUT)?,
+        None => run_with_timeout(&["file", "cp", &file_str, &target_arg], SEND_TIMEOUT)?,
     };
     Ok(())
 }
