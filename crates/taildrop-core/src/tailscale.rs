@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
@@ -64,12 +65,68 @@ fn command(bin: &Path) -> Command {
     Command::new(bin)
 }
 
+// --- timing log ---------------------------------------------------------
+
+/// Where to append one line per `tailscale` invocation with how long it took.
+/// Unset until a caller opts in, so the CLI stays silent; the GUI points it at
+/// its app-data dir. This exists because the cost of a single invocation
+/// varies wildly by platform — ~15ms on Linux, potentially seconds on Windows
+/// where process creation, antivirus inspection and the CLI's connection to
+/// tailscaled all pile up — and that number decides whether sluggishness is
+/// our scheduling or the CLI itself. Guessing at it from the other side of an
+/// OS is how you fix the wrong thing.
+static LOG_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Start appending invocation timings to `path`. Truncates first if the file
+/// has grown past a megabyte, so an install that runs for months doesn't leave
+/// an unbounded log behind.
+pub fn set_timing_log(path: PathBuf) {
+    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > 1_000_000 {
+        let _ = std::fs::remove_file(&path);
+    }
+    *LOG_PATH.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+}
+
+/// Note a one-off event (receiver started, fell back, ...) in the same log.
+pub fn log_event(message: &str) {
+    log_line(&format!(
+        "{}  {}",
+        chrono::Utc::now().to_rfc3339(),
+        message
+    ));
+}
+
+fn log_timing(args: &[&str], elapsed: Duration, outcome: &str) {
+    log_line(&format!(
+        "{}  {:>7}ms  {:<7} tailscale {}",
+        chrono::Utc::now().to_rfc3339(),
+        elapsed.as_millis(),
+        outcome,
+        args.join(" ")
+    ));
+}
+
+fn log_line(line: &str) {
+    use std::io::Write;
+    let guard = LOG_PATH.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(path) = guard.as_ref() else { return };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 fn run(args: &[&str]) -> Result<String> {
+    let started = Instant::now();
     let output = command(&binary())
         .args(args)
         .stdin(Stdio::null())
         .output()
         .map_err(TaildropError::Spawn)?;
+    log_timing(
+        args,
+        started.elapsed(),
+        if output.status.success() { "ok" } else { "failed" },
+    );
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(TaildropError::Command(if stderr.is_empty() {
@@ -153,41 +210,110 @@ fn run_bin_with_timeout(bin: &Path, args: &[&str], timeout: Duration) -> Result<
 /// tab switch remounts a view, and a batch send used to re-ask for `status`
 /// once per file. A device list a few seconds stale is invisible to the user;
 /// the repeated spawns are not. Explicit refresh actions bypass this.
-const CACHE_TTL: Duration = Duration::from_secs(10);
+const CACHE_TTL: Duration = Duration::from_secs(20);
+
+/// Past this, a cached answer stops being served at all and the caller waits
+/// for a live one. Without a ceiling, a `tailscale` that has started failing
+/// (logged out, daemon stopped) would keep handing the UI a device list from
+/// an hour ago and never surface the error.
+const MAX_STALE: Duration = Duration::from_secs(300);
 
 struct Cached<T> {
     value: T,
     fetched_at: Instant,
 }
 
-static STATUS_CACHE: Mutex<Option<Cached<TailnetStatus>>> = Mutex::new(None);
-static TARGETS_CACHE: Mutex<Option<Cached<Vec<CpTarget>>>> = Mutex::new(None);
+struct CacheSlot<T: 'static> {
+    data: Mutex<Option<Cached<T>>>,
+    /// Held for the duration of a fetch so concurrent misses queue behind one
+    /// subprocess instead of each starting their own. Without it, the startup
+    /// warm-up and the first view to mount would race and pay twice — exactly
+    /// the cost the cache exists to avoid. Never acquired while `data` is
+    /// held, so the two can't deadlock.
+    fetching: Mutex<()>,
+    refreshing: AtomicBool,
+}
 
-/// Serve `slot` if it's younger than [`CACHE_TTL`], otherwise call `fetch` and
-/// store the result. The lock is deliberately *not* held across `fetch`: a
-/// wedged `tailscale` subprocess would otherwise block every other caller too,
-/// and the worst case without it is one redundant spawn when two threads miss
-/// at the same moment.
-fn cached<T: Clone>(
-    slot: &Mutex<Option<Cached<T>>>,
-    fresh: bool,
-    fetch: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    if !fresh {
-        let guard = slot.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = guard.as_ref() {
-            if entry.fetched_at.elapsed() < CACHE_TTL {
-                return Ok(entry.value.clone());
-            }
+impl<T: Clone + Send + 'static> CacheSlot<T> {
+    const fn new() -> Self {
+        Self {
+            data: Mutex::new(None),
+            fetching: Mutex::new(()),
+            refreshing: AtomicBool::new(false),
         }
     }
-    let value = fetch()?;
-    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Cached {
-        value: value.clone(),
-        fetched_at: Instant::now(),
-    });
-    Ok(value)
+
+    /// Stale-while-revalidate. A hit younger than [`CACHE_TTL`] is returned as
+    /// is; an older one is still returned *immediately* while a refresh runs
+    /// on a background thread, so the caller never waits on a subprocess for
+    /// data we already have. Only a cold slot (or one past [`MAX_STALE`], or
+    /// an explicit `fresh` request) actually blocks.
+    ///
+    /// This is what keeps the UI responsive on Windows, where one `tailscale`
+    /// invocation can cost seconds: views load data when they mount, and a
+    /// view mounts on every tab switch.
+    fn get(&'static self, fresh: bool, fetch: fn() -> Result<T>) -> Result<T> {
+        if !fresh {
+            // Cloned out under the lock, which is never held across `fetch`:
+            // a wedged subprocess must not block every other caller too.
+            let hit = {
+                let guard = self.data.lock().unwrap_or_else(|e| e.into_inner());
+                guard
+                    .as_ref()
+                    .map(|entry| (entry.value.clone(), entry.fetched_at.elapsed()))
+            };
+            if let Some((value, age)) = hit {
+                if age < CACHE_TTL {
+                    return Ok(value);
+                }
+                if age < MAX_STALE {
+                    self.refresh_in_background(fetch);
+                    return Ok(value);
+                }
+            }
+        }
+        self.fetch_and_store(fetch)
+    }
+
+    fn refresh_in_background(&'static self, fetch: fn() -> Result<T>) {
+        // One refresh in flight at a time — a burst of requests against a
+        // stale slot should cost one subprocess, not one each.
+        if self.refreshing.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        std::thread::spawn(move || {
+            let _ = self.fetch_and_store(fetch);
+            self.refreshing.store(false, Ordering::SeqCst);
+        });
+    }
+
+    fn fetch_and_store(&self, fetch: fn() -> Result<T>) -> Result<T> {
+        let _single_flight = self.fetching.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Whoever we queued behind may have just filled the slot; take their
+        // answer rather than spawning a second identical subprocess.
+        let hit = {
+            let guard = self.data.lock().unwrap_or_else(|e| e.into_inner());
+            guard
+                .as_ref()
+                .filter(|entry| entry.fetched_at.elapsed() < CACHE_TTL)
+                .map(|entry| entry.value.clone())
+        };
+        if let Some(value) = hit {
+            return Ok(value);
+        }
+
+        let value = fetch()?;
+        *self.data.lock().unwrap_or_else(|e| e.into_inner()) = Some(Cached {
+            value: value.clone(),
+            fetched_at: Instant::now(),
+        });
+        Ok(value)
+    }
 }
+
+static STATUS_CACHE: CacheSlot<TailnetStatus> = CacheSlot::new();
+static TARGETS_CACHE: CacheSlot<Vec<CpTarget>> = CacheSlot::new();
 
 /// Populate the caches ahead of the first UI request. The GUI calls this on a
 /// background thread at startup so the `tailscale` round trips overlap with
@@ -258,15 +384,17 @@ struct RawStatus {
 /// device/network statistics view. Answers from the [`CACHE_TTL`] cache unless
 /// `fresh` is set, which user-initiated refreshes do.
 pub fn status(fresh: bool) -> Result<TailnetStatus> {
-    cached(&STATUS_CACHE, fresh, || {
-        let out = run(&["status", "--json"])?;
-        let raw: RawStatus = serde_json::from_str(&out)?;
-        let mut peers: Vec<Peer> = raw.peer.into_values().map(|p| p.into_peer(false)).collect();
-        peers.sort_by(|a, b| a.hostname.to_lowercase().cmp(&b.hostname.to_lowercase()));
-        Ok(TailnetStatus {
-            self_peer: raw.self_peer.into_peer(true),
-            peers,
-        })
+    STATUS_CACHE.get(fresh, fetch_status)
+}
+
+fn fetch_status() -> Result<TailnetStatus> {
+    let out = run(&["status", "--json"])?;
+    let raw: RawStatus = serde_json::from_str(&out)?;
+    let mut peers: Vec<Peer> = raw.peer.into_values().map(|p| p.into_peer(false)).collect();
+    peers.sort_by(|a, b| a.hostname.to_lowercase().cmp(&b.hostname.to_lowercase()));
+    Ok(TailnetStatus {
+        self_peer: raw.self_peer.into_peer(true),
+        peers,
     })
 }
 
@@ -274,16 +402,14 @@ pub fn status(fresh: bool) -> Result<TailnetStatus> {
 /// this over filtering `status()` for the send picker: it reflects ACLs and
 /// file-sharing eligibility, not just online-ness. Cached like `status`.
 pub fn cp_targets(fresh: bool) -> Result<Vec<CpTarget>> {
-    cached(&TARGETS_CACHE, fresh, || {
-        let out = run(&["file", "cp", "--targets"])?;
-        Ok(parse_cp_targets(&out))
-    })
+    TARGETS_CACHE.get(fresh, fetch_cp_targets)
 }
 
-/// Parses `tailscale file cp --targets` output, e.g.:
-/// `100.124.5.74\tpekarnya` (online) or `100.73.188.63\t11pm\toffline; last seen 981h1m0s ago`.
-/// Split out from `cp_targets` so the format can be unit-tested without a
-/// live `tailscaled` to shell out to.
+fn fetch_cp_targets() -> Result<Vec<CpTarget>> {
+    let out = run(&["file", "cp", "--targets"])?;
+    Ok(parse_cp_targets(&out))
+}
+
 fn parse_cp_targets(out: &str) -> Vec<CpTarget> {
     let mut targets = Vec::new();
     for line in out.lines() {
@@ -437,6 +563,48 @@ pub fn drain_inbox(dest_dir: &Path, conflict: ConflictPolicy) -> Result<Vec<Path
     run(&["file", "get", &conflict_arg, &dest_str])?;
     let after = snapshot_dir(dest_dir);
     Ok(after.difference(&before).cloned().collect())
+}
+
+/// Start a long-lived `tailscale file get --loop`, which keeps draining the
+/// inbox into `dest_dir` for as long as the child lives, and hand back the
+/// child so the caller can supervise and kill it.
+///
+/// This exists to replace polling with one process instead of one process
+/// *per tick*. At the default 3s interval that was ~1200 spawns an hour; on
+/// Windows each one costs a console window flashing over the user's desktop
+/// (see `command`), an antivirus inspection, and a fresh connection to
+/// tailscaled — for an inbox that is empty almost every time.
+///
+/// The same destructive-drain rule as `drain_inbox` applies, and more so:
+/// this child is *continuously* consuming the inbox, so `dest_dir` must be
+/// the staging area, never the user's save directory.
+///
+/// stdout/stderr go to null deliberately: nothing reads them for the life of
+/// the process, and a pipe nobody drains would eventually fill and wedge the
+/// child. Callers detect an unsupported `--loop` (older `tailscale` builds)
+/// by the child exiting immediately rather than by its message.
+pub fn spawn_receiver(dest_dir: &Path, conflict: ConflictPolicy) -> Result<std::process::Child> {
+    spawn_receiver_bin(&binary(), dest_dir, conflict)
+}
+
+/// Split out like `run_bin_with_timeout`, so tests can point the receiver at a
+/// stand-in binary without touching the process-wide `TAILSCALE_BIN`.
+pub(crate) fn spawn_receiver_bin(
+    bin: &Path,
+    dest_dir: &Path,
+    conflict: ConflictPolicy,
+) -> Result<std::process::Child> {
+    std::fs::create_dir_all(dest_dir).map_err(|e| TaildropError::Io(e.to_string()))?;
+    let dest_str = dest_dir.to_string_lossy().into_owned();
+    let conflict_arg = format!("--conflict={}", conflict.as_flag());
+    log_event(&format!("receiver: starting `file get --loop {conflict_arg}`"));
+    command(bin)
+        .args(["file", "get", "--loop", &conflict_arg, &dest_str])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(TaildropError::Spawn)
 }
 
 /// Best-effort peek at what's waiting in the inbox *without* consuming it,

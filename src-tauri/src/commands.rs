@@ -1,14 +1,18 @@
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
 use taildrop_core::error::TaildropError;
 use taildrop_core::models::{CpTarget, DeviceStats, PendingIncoming, Settings, TransferRecord};
 use taildrop_core::store::Store;
-use taildrop_core::{device_stats, poll_inbox_once, send_with_attribution, tailscale};
+use taildrop_core::{
+    device_stats, poll_inbox_once, poll_staging_once, send_with_attribution, tailscale,
+};
 
 pub struct AppState {
     pub store: Arc<Store>,
+    pub receiver: Arc<crate::poller::Receiver>,
 }
 
 fn to_str_err<T>(result: Result<T, TaildropError>) -> Result<T, String> {
@@ -140,12 +144,22 @@ pub async fn list_pending(state: State<'_, AppState>) -> Result<Vec<PendingIncom
 /// Manual "refresh" trigger for the frontend, on top of the background
 /// poller — lets the UI react immediately to a user-initiated check instead
 /// of waiting for the next timer tick.
+///
+/// With the `file get --loop` receiver up this is just a directory listing:
+/// the child is already draining the inbox, so there is nothing to shell out
+/// for. That matters because the Inbox view calls this every time it mounts,
+/// i.e. on every tab switch. Only the fallback path spawns a process.
 #[tauri::command]
 pub async fn poll_now(state: State<'_, AppState>) -> Result<Vec<PendingIncoming>, String> {
     let store = state.store.clone();
+    let receiver_up = state.receiver.alive.load(Ordering::Relaxed);
     blocking(move || {
-        let settings = store.load_settings()?;
-        poll_inbox_once(&store, settings.conflict_policy)
+        if receiver_up {
+            poll_staging_once(&store)
+        } else {
+            let settings = store.load_settings()?;
+            poll_inbox_once(&store, settings.conflict_policy)
+        }
     })
     .await
 }
