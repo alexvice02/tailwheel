@@ -17,6 +17,12 @@ jobs:
             args: ''
           - platform: 'windows-latest'
             args: ''
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+            rust_target: 'aarch64-apple-darwin'
+          - platform: 'macos-latest'
+            args: '--target x86_64-apple-darwin'
+            rust_target: 'x86_64-apple-darwin'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -49,6 +55,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          target: ${{ matrix.rust_target }}
 
       - name: tauri-action (main)
         if: github.ref_name == 'main'
@@ -68,7 +75,7 @@ jobs:
           uploadUpdaterJson: true
           updaterJsonPreferNsis: false
           tauriScript:
-          args:
+          args: ${{ matrix.args }}
           retryAttempts: 2
           owner: alexvice02
           repo:
@@ -99,7 +106,7 @@ jobs:
           uploadUpdaterJson: true
           updaterJsonPreferNsis: false
           tauriScript:
-          args:
+          args: ${{ matrix.args }}
           retryAttempts: 2
           owner: alexvice02
           repo:
