@@ -14,7 +14,7 @@ anything lands on your disk.
 </div>
 
 <div align="center"> 
-<img src="docs/screenshots/tab-tailnet.png" width="400" alt="Tailwheel icon">
+<img src="docs/screenshots/tab-tailnet.png" width="100%" alt="Tailwheel icon">
 </div>
 
 ---
